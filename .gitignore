@@ -1,0 +1,18 @@
+# secrets
+.env
+.env.txt
+
+# environments / build output
+.venv/
+faiss_index/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+
+# runtime state only - data/policies is source and must be tracked
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/embeddings.npy
+logs/

@@ -1,0 +1,85 @@
+Policy retrieval scores (extractive mode, cosine on MiniLM)
+
+[refund, no region] What is the refund policy?
+  status=answered reason=None at=2026-11-19
+    0.653  refund_policy_in_v2          v2 IN     refund_policy
+    0.463  billing_dispute_v1           v1 GLOBAL billing_dispute
+    0.447  faq_007                      v1 IN     faq_007
+    0.346  support_hours_v1             v1 IN     support_hours
+
+[refund, India] How many days do I have to request a refund in India?
+  status=answered reason=None at=2026-11-19
+    0.761  refund_policy_in_v2          v2 IN     refund_policy
+    0.457  support_hours_v1             v1 IN     support_hours
+    0.417  emi_policy_in_v1             v1 IN     emi_policy
+    0.369  billing_dispute_v1           v1 GLOBAL billing_dispute
+
+[refund, historical] What was the refund window in March 2025?
+  status=answered reason=None at=2025-03-01
+    0.435  refund_policy_in_v1          v1 IN     refund_policy
+    0.381  faq_007                      v1 IN     faq_007
+    0.309  support_hours_v1             v1 IN     support_hours
+    0.305  faq_068                      v1 IN     faq_068
+
+[EMI] Is 9 month EMI available?
+  status=answered reason=None at=2026-11-19
+    0.572  emi_policy_in_v1             v1 IN     emi_policy
+    0.566  faq_014                      v1 IN     faq_014
+    0.408  refund_policy_in_v2          v2 IN     refund_policy
+    0.363  course_access_v1             v1 GLOBAL course_access
+
+[certificate] Can I still get a certificate if I miss two sessions?
+  status=answered reason=None at=2026-11-19
+    0.486  certificate_policy_v1        v1 GLOBAL certificate_policy
+    0.379  course_access_v1             v1 GLOBAL course_access
+    0.353  faq_023                      v1 IN     faq_023
+    0.284  billing_dispute_v1           v1 GLOBAL billing_dispute
+
+[fee 2027] What will the course fee be in 2027?
+  status=answered reason=None at=2027-01-01
+    0.628  course_fee_2027              v1 IN     course_fee
+    0.564  faq_023                      v1 IN     faq_023
+    0.478  faq_028                      v1 IN     faq_028
+    0.464  faq_021                      v1 IN     faq_021
+
+[support hours] When is support available?
+  status=answered reason=None at=2026-11-19
+    0.578  support_hours_v1             v1 IN     support_hours
+    0.432  faq_024                      v1 IN     faq_024
+    0.272  faq_023                      v1 IN     faq_023
+    0.257  faq_028                      v1 IN     faq_028
+
+[duplicate charge] My invoice shows a duplicate charge, what happens now?
+  status=answered reason=None at=2026-11-19
+    0.567  billing_dispute_v1           v1 GLOBAL billing_dispute
+    0.434  faq_064                      v1 IN     faq_064
+    0.248  support_hours_v1             v1 IN     support_hours
+    0.247  faq_058                      v1 IN     faq_058
+
+[restricted doc] What are the internal steps for a hacked account?
+  status=refused reason=restricted at=2026-11-19
+    0.217  faq_024                      v1 IN     faq_024
+    0.137  emi_policy_in_v1             v1 IN     emi_policy
+    0.121  faq_057                      v1 IN     faq_057
+    0.118  faq_049                      v1 IN     faq_049
+
+[noise 1] What is the capital of France?
+  status=refused reason=no_evidence at=2026-11-19
+    0.130  certificate_policy_v1        v1 GLOBAL certificate_policy
+    0.117  faq_053                      v1 IN     faq_053
+    0.100  faq_029                      v1 IN     faq_029
+    0.079  faq_033                      v1 IN     faq_033
+
+[noise 2] Who is the Prime Minister of India?
+  status=refused reason=no_evidence at=2026-11-19
+    0.173  emi_policy_in_v1             v1 IN     emi_policy
+    0.153  faq_052                      v1 IN     faq_052
+    0.135  faq_074                      v1 IN     faq_074
+    0.134  faq_068                      v1 IN     faq_068
+
+[noise 3] Do you sell laptops?
+  status=answered reason=None at=2026-11-19
+    0.391  faq_026                      v1 IN     faq_026
+    0.235  faq_015                      v1 IN     faq_015
+    0.209  faq_003                      v1 IN     faq_003
+    0.207  faq_020                      v1 IN     faq_020

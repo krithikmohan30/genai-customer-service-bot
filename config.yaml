@@ -1,0 +1,92 @@
+app:
+  name: "Elevance Support Bot"
+  timezone: "Asia/Kolkata"
+
+llm:
+  model: "gemini-3.5-flash"
+  fallback_model: "gemini-3.5-flash-lite"
+  temperature: 0.2
+
+triage:
+  mode: "auto"          # auto | llm | rules  (rules = deterministic, used by tests)
+
+languages:
+  supported: ["en", "hi", "ta", "hinglish", "tanglish"]
+  confidence_floor: 0.5
+
+business_hours:
+  start: "09:30"
+  end: "18:30"
+  working_days: [0, 1, 2, 3, 4]      # Monday=0
+  holidays: ["2026-12-25", "2027-01-01", "2027-01-26"]
+
+sentiment:
+  labels: ["positive", "neutral", "negative", "frustrated", "urgent", "sarcastic"]
+  confidence_floor: 0.45
+  repeated_negative_threshold: 3
+
+escalation:
+  unresolved_minutes: 15
+  risk_levels: ["high"]
+  queues:
+    on_call: "on_call_support"
+    next_day: "next_working_day"
+    trust_safety: "trust_and_safety"
+
+sla:
+  warn_ratio: 0.75
+  by_severity:
+    critical: 60
+    high: 240
+    medium: 480
+    low: 1440
+
+routing:
+  teams:
+    billing:
+      skills: ["billing", "payment", "refund"]
+      capacity: 5
+    technical:
+      skills: ["technical", "app", "login", "product"]
+      capacity: 5
+    trust_safety:
+      skills: ["account", "security", "legal", "fraud"]
+      capacity: 2
+  timezone: "Asia/Kolkata"
+
+policy:
+  index_path: "data/policies/index.json"
+  mode: "auto"              # auto | extractive  (extractive = no LLM, used by tests)
+  similarity_floor: 0.28    # calibrated in results/policy_scores.txt
+  ambiguity_margin: 0.04
+  max_docs: 4
+  default_region: "IN"      # company home region when the question names none
+  access_levels:            # requester role -> readable document levels
+    customer: ["public", "customer"]
+    agent: ["public", "customer", "agent"]
+    admin: ["public", "customer", "agent", "internal"]
+
+knowledge:
+  maintenance_window:
+    start: "01:00"
+    end: "04:00"
+
+  retry_minutes: [15, 30, 60]
+  health_check_minutes: 5
+  quarantine_max_mb: 5
+  quality_gate_min_score: 0.6
+
+uploads:
+  retention_hours: 24
+  processing_timeout_seconds: 30
+  allowed_types: ["png", "jpg", "jpeg", "pdf", "webp"]
+  max_mb: 10
+
+sessions:
+  inactivity_minutes: 30
+  restore_hours: 24
+  context_messages: 10
+
+security:
+  mask_pii: true
+  block_injection: true
