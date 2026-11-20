@@ -103,6 +103,77 @@ _POSITIVE = [
     r"\bperfect\b",
 ]
 
+# Hindi (Devanagari), Tamil script, and the two transliterated variants. Task 1
+# asks for multilingual sentiment, so the rules path has to work without the
+# model; the LLM path handles the long tail.
+_NEGATIVE_HI = [
+    r"नहीं\s*चल",
+    r"काम\s*नहीं",
+    r"खराब",
+    r"दिक्कत",
+    r"समस्या",
+    r"गलत",
+    r"देरी",
+    r"नहीं\s*मिला",
+]
+_FRUSTRATED_HI = [r"नाराज़", r"परेशान", r"बहुत\s*बार", r"बार\s*बार"]
+_URGENT_HI = [r"तुरंत", r"जल्दी", r"इमरजेंसी", r"अभी\s*तक"]
+_POSITIVE_HI = [r"धन्यवाद", r"शुक्रिया", r"अच्छा", r"बढ़िया"]
+
+_NEGATIVE_TA = [
+    r"வேலை\s*செய்ய",
+    r"பிரச்சனை",
+    r"தவறு",
+    r"தாமதம்",
+    r"வரவில்லை",
+]
+_FRUSTRATED_TA = [r"கோபம்", r"எரிச்சல்", r"மீண்டும்\s*மீண்டும்"]
+_URGENT_TA = [r"அவசரம்", r"உடனே", r"உடனடி"]
+_POSITIVE_TA = [r"நன்றி", r"நல்ல"]
+
+_NEGATIVE_HINGLISH = [
+    r"\bkaam\s+nahi\b",
+    r"\bnahi\s+chal",
+    r"\bkharab\b",
+    r"\bproblem\s+hai\b",
+    r"\bgalat\b",
+    r"\bderi\b",
+]
+_FRUSTRATED_HINGLISH = [
+    r"\bpareshan\b",
+    r"\bbahut\s+baar\b",
+    r"\bbaarr?\s+baarr?\b",
+    r"\bnaraz\b",
+]
+_URGENT_HINGLISH = [r"\bjaldi\b", r"\bturant\b", r"\babhi\b"]
+_POSITIVE_HINGLISH = [r"\bdhanyawad\b", r"\bshukriya\b", r"\bachh?a\b", r"\bbadhiya\b"]
+
+_NEGATIVE_TANGLISH = [
+    r"\bvelai\s+illa\b",
+    r"\bvelai\s+aagala\b",
+    r"\bprach?ana\b",
+    r"\bthappu\b",
+    r"\bvarala\b",
+]
+_FRUSTRATED_TANGLISH = [
+    r"\bromba\s+kastam\b",
+    r"\berichal\b",
+    r"\bthirumba\s+thirumba\b",
+]
+_URGENT_TANGLISH = [r"\bavasaram\b", r"\budane\b", r"\bseekiram\b"]
+_POSITIVE_TANGLISH = [r"\bnandri\b", r"\bnalla\b", r"\bsuper\b"]
+
+_HINGLISH_WORDS = re.compile(
+    r"\b(?:nahi|nahin|hai|kya|mera|meri|kaam|paisa|jaldi|karo|bhejo|"
+    r"pareshan|kharab|shukriya|dhanyawad|badhiya)\b",
+    re.I,
+)
+_TANGLISH_WORDS = re.compile(
+    r"\b(?:velai|prach?ana|romba|nandri|illai|illa|sollunga|avasaram|"
+    r"seekiram|thappu|erichal|udane|aagala|varala)\b",
+    re.I,
+)
+
 _RISK: dict[str, list[str]] = {
     "account_compromise": [
         r"(?:someone|somebody|anyone)\s+(?:has\s+)?(?:changed|reset|accessed|logged\s+in)",
@@ -166,18 +237,20 @@ def _confidence(base: float, hits: int, cap: float = 0.96) -> float:
 
 
 def guess_language(text: str) -> str:
-    """Script-based first pass; step 6 replaces this with a full detector."""
+    """Script and loanword detector. Step 6 refines it; it is shared from here."""
     if re.search(r"[\u0900-\u097F]", text):
         return "hi"
     if re.search(r"[\u0B80-\u0BFF]", text):
         return "ta"
-    hinglish = re.search(
-        r"\b(?:nahi|nahin|hai|kya|mera|meri|kaam|paisa|jaldi|karo|bhejo)\b",
-        text,
-        re.I,
-    )
+
+    hinglish = bool(_HINGLISH_WORDS.search(text))
+    tanglish = bool(_TANGLISH_WORDS.search(text))
+    if hinglish and tanglish:
+        return "mixed"
     if hinglish:
         return "hinglish"
+    if tanglish:
+        return "tanglish"
     return "en"
 
 
@@ -228,10 +301,26 @@ def _rule_sentiment(text: str, history: list[str] | None) -> dict:
     history = history or []
     scores = {
         "sarcastic": _hits(_SARCASM, text),
-        "urgent": _hits(_URGENT, text),
-        "frustrated": _hits(_FRUSTRATED, text),
-        "negative": _hits(_NEGATIVE, text),
-        "positive": _hits(_POSITIVE, text),
+        "urgent": _hits(_URGENT, text)
+        + _hits(_URGENT_HI, text)
+        + _hits(_URGENT_TA, text)
+        + _hits(_URGENT_HINGLISH, text)
+        + _hits(_URGENT_TANGLISH, text),
+        "frustrated": _hits(_FRUSTRATED, text)
+        + _hits(_FRUSTRATED_HI, text)
+        + _hits(_FRUSTRATED_TA, text)
+        + _hits(_FRUSTRATED_HINGLISH, text)
+        + _hits(_FRUSTRATED_TANGLISH, text),
+        "negative": _hits(_NEGATIVE, text)
+        + _hits(_NEGATIVE_HI, text)
+        + _hits(_NEGATIVE_TA, text)
+        + _hits(_NEGATIVE_HINGLISH, text)
+        + _hits(_NEGATIVE_TANGLISH, text),
+        "positive": _hits(_POSITIVE, text)
+        + _hits(_POSITIVE_HI, text)
+        + _hits(_POSITIVE_TA, text)
+        + _hits(_POSITIVE_HINGLISH, text)
+        + _hits(_POSITIVE_TANGLISH, text),
     }
     # Textual shouting counts as frustration, but only when the message is long
     # enough that caps are a signal rather than an acronym.
@@ -309,6 +398,9 @@ Rules:
   neutral sentiment and HIGH risk.
 - Sarcasm ("Great, another delay") is label "sarcastic", never "positive".
 - Account compromise, duplicate payment, fraud and legal threats are HIGH risk.
+- Being locked out, forgetting a password or being unable to log in is NOT account
+  compromise. Only use that category when there is evidence of an unauthorised
+  change or access.
 - Confidence is a number between 0 and 1.
 
 CONVERSATION HISTORY:
@@ -320,7 +412,13 @@ LATEST MESSAGE:
 
 
 def _merge(llm_out: dict, rules: dict, message: str) -> dict:
-    """LLM wins on nuance; rules win on safety."""
+    """LLM wins on nuance; rules win on safety.
+
+    A risk category proposed by the model is only accepted when the message
+    contains evidence for it. Without this, "I can't access my account" is
+    labelled account compromise and an after-hours urgent goes to the wrong
+    queue instead of on-call.
+    """
     sentiment = dict(rules["sentiment"])
     incoming = llm_out.get("sentiment") or {}
     label = str(incoming.get("label", "")).lower()
@@ -336,17 +434,39 @@ def _merge(llm_out: dict, rules: dict, message: str) -> dict:
     if rules["sentiment"]["label"] == "sarcastic" and label != "sarcastic":
         sentiment = dict(rules["sentiment"])
 
+    # An explicit complaint keyword must not be reclassified as positive or
+    # neutral. The model has no veto over its own safety net.
+    rules_label = rules["sentiment"]["label"]
+    if rules_label in ("negative", "frustrated", "urgent") and label in (
+        "positive",
+        "neutral",
+    ):
+        sentiment = dict(rules["sentiment"])
+        sentiment["confidence"] = max(float(sentiment["confidence"]), 0.6)
+
     risk = dict(rules["risk"])
     incoming_risk = llm_out.get("risk") or {}
     llm_level = str(incoming_risk.get("level", "")).lower()
+    proposed = [
+        str(category)
+        for category in (incoming_risk.get("categories") or [])
+        if isinstance(category, str)
+    ]
+    evidenced = [
+        category
+        for category in proposed
+        if category in _RISK and _hits(_RISK[category], message)
+    ]
+
     if llm_level in RISK_ORDER:
         risk["level"] = _max_risk(llm_level, rules["risk"]["level"])
-        if llm_level != risk["level"]:
-            risk["confidence"] = max(risk["confidence"], 0.75)
-    categories = [
-        str(c) for c in (incoming_risk.get("categories") or []) if isinstance(c, str)
-    ]
-    risk["categories"] = sorted(set(rules["risk"]["categories"]) | set(categories))
+
+    risk["categories"] = sorted(set(rules["risk"]["categories"]) | set(evidenced))
+    if risk["level"] == "high" and not risk["categories"]:
+        # High risk with nothing behind it is not actionable; keep it visible
+        # but below the escalation line.
+        risk["level"] = "medium"
+        risk["confidence"] = min(float(risk["confidence"]), 0.6)
 
     entities = dict(rules["entities"])
     for key, value in (llm_out.get("entities") or {}).items():

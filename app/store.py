@@ -111,10 +111,13 @@ def add_escalation(
     summary: str,
     queue: str | None = None,
     risk_level: str | None = None,
+    sentiment: str | None = None,
+    scheduled_for: str | None = None,
 ) -> int:
     return db.execute(
         "INSERT INTO escalations (session_id, reason, condition, summary, queue,"
-        " risk_level, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        " risk_level, sentiment, scheduled_for, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             session_id,
             reason,
@@ -122,6 +125,8 @@ def add_escalation(
             security.mask(summary),
             queue,
             risk_level,
+            sentiment,
+            scheduled_for,
             clock.now_iso(),
         ),
     )
@@ -148,6 +153,20 @@ def escalations(session_id: str | None = None) -> list[dict]:
             "SELECT * FROM escalations WHERE session_id = ? ORDER BY id", (session_id,)
         )
     return db.query("SELECT * FROM escalations ORDER BY id")
+
+
+def sessions_with_messages_since(since_iso: str) -> list[str]:
+    rows = db.query(
+        "SELECT DISTINCT session_id FROM messages WHERE created_at >= ?", (since_iso,)
+    )
+    return [row["session_id"] for row in rows]
+
+
+def mark_escalation_resolved(escalation_id: int) -> None:
+    db.execute(
+        "UPDATE escalations SET resolved_at = ? WHERE id = ?",
+        (clock.now_iso(), escalation_id),
+    )
 
 
 # --------------------------------------------------------------------------- audit

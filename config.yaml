@@ -32,6 +32,7 @@ escalation:
     on_call: "on_call_support"
     next_day: "next_working_day"
     trust_safety: "trust_and_safety"
+    supervisor: "supervisor_queue"
 
 sla:
   warn_ratio: 0.75

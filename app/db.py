@@ -53,6 +53,8 @@ CREATE TABLE IF NOT EXISTS escalations (
     summary     TEXT,
     queue       TEXT,
     risk_level  TEXT,
+    sentiment   TEXT,
+    scheduled_for TEXT,
     created_at  TEXT NOT NULL,
     resolved_at TEXT
 );
@@ -150,6 +152,16 @@ def connect() -> sqlite3.Connection:
 def init_db() -> None:
     with connect() as conn:
         conn.executescript(SCHEMA)
+        _migrate(conn)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Additive changes only: existing data must survive a schema tweak."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(escalations)")}
+    if "sentiment" not in columns:
+        conn.execute("ALTER TABLE escalations ADD COLUMN sentiment TEXT")
+    if "scheduled_for" not in columns:
+        conn.execute("ALTER TABLE escalations ADD COLUMN scheduled_for TEXT")
 
 
 def query(sql: str, params: tuple | list = ()) -> list[dict]:

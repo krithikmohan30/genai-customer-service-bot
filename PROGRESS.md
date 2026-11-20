@@ -82,3 +82,46 @@ billing dispute, support hours, internal account-security runbook).
 **Correction:** the dataset is **76 FAQ records** spread over 253 lines, not 253 rows. Confirmed from the CSV reader and the FAISS docstore (76 documents). README corrected.
 
 **Next:** Step 3 — sentiment escalation, on-call queue, 15-minute timer (Task 1).
+
+## 2026-11-20 — Step 3: sentiment escalation (Task 1)
+
+**Added**
+
+| File | Purpose |
+|---|---|
+| `app/core/calendar.py` | Working days, holidays, business minutes, next-working-start |
+| `app/core/escalation.py` | Five triggers, escalation records, masked conversation summary, 15-minute sweep |
+| `app/core/response.py` | Tone-adjusted replies in 5 languages, policy text left byte-identical |
+| `POST /admin/sweep`, `GET /admin/calendar` | Timer evaluation and calendar inspection |
+| `tests/test_step3_escalation.py` | 25 tests covering every hidden-evaluation hint |
+| `scripts/smoke_step3.py` | Live multilingual smoke test |
+
+**Escalation triggers, in priority order**
+
+1. High risk (account compromise, duplicate payment, legal threat, fraud) → `trust_and_safety`
+2. Urgent outside business hours → `on_call_support`
+3. Three negative turns in a row → `supervisor_queue`
+4. Complaint outside business hours → `next_working_day`, scheduled for the next working 09:30
+5. Negative conversation open for 15 minutes → `supervisor_queue`
+
+Every record stores reason, condition string, sentiment, masked summary, queue and (where relevant) the scheduled callback time.
+
+**Verified**
+
+- `python -m pytest tests -q` → **56 passed in 26s**.
+- After-hours urgent at 22:15 Friday → `after_hours_urgent` → `on_call_support`.
+- After-hours complaint at 22:00 Friday → `after_hours_complaint`, `scheduled_for` = Monday 09:30.
+- Repeat negative during hours → `repeated_negative` on the third turn only.
+- Negative at 11:00, clock advanced 16 minutes, `POST /admin/sweep` → `unresolved_15m`, condition `unresolved_minutes>=15`.
+- Resolved conversation (customer says "it works now") is not swept.
+- Weekend arithmetic: Friday 18:00 → Monday 10:30 = 90 business minutes.
+- Multilingual live: Hindi complaint → `negative`, reply in Hindi; Tamil → `urgent`, reply in Tamil; Hinglish → `frustrated`, reply in Hinglish; Tanglish detected.
+
+**Two model defects found and fixed**
+
+1. The model labelled *"I can't access my account"* as account compromise, which sent an after-hours urgent to the security queue. A risk category is now accepted only when the message contains evidence for it (`triage._merge`). High risk with no evidenced category is demoted to medium, so the urgent/after-hours rule wins.
+2. The model labelled a Hindi complaint as neutral. Rules now win when an explicit complaint keyword is present and the model returns positive or neutral. The model can add detail; it cannot overrule its own safety net.
+
+Both cases are covered by unit tests that stub the model output.
+
+**Next:** Step 4 — business calendar SLA engine: 75% warning and breach escalation (Task 2a).

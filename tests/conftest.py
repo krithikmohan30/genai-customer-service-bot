@@ -47,6 +47,16 @@ def restore_config():
         config.set_override(key, value)
 
 
+@pytest.fixture(autouse=True)
+def reset_clock():
+    """No test may inherit a frozen or advanced clock."""
+    from app.core import clock
+
+    clock.reset()
+    yield
+    clock.reset()
+
+
 @pytest.fixture()
 def client():
     from fastapi.testclient import TestClient

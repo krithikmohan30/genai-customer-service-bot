@@ -1,34 +1,32 @@
 """FastAPI entry point.
 
-Step 1 surface: health, chat (triage only), and the two admin endpoints the
-hidden evaluation needs — simulated time and runtime configuration changes.
+Surfaces built so far:
+  step 1  health, chat, simulated time, runtime configuration
+  step 2  policy search/ask with citations (Task 4)
+  step 3  escalation handling and the 15-minute sweep (Task 1)
 """
 
 from __future__ import annotations
 
+import re
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from . import db, store
-from .core import clock, config, policy, security, triage
+from .core import clock, config, policy, response, security, triage
+from .core import escalation as escalation_engine
 
-REPLIES = {
-    "positive": "Glad that worked. Anything else I can check for you?",
-    "neutral": "Thanks for the details. Let me look into this.",
-    "negative": "I'm sorry about the trouble. I'm checking your issue now.",
-    "frustrated": "I understand the frustration, and I'm sorry. I'm taking this up now.",
-    "urgent": "I've flagged this as urgent and a specialist is picking it up now.",
-    "sarcastic": "I hear you, and I'm sorry this keeps happening. I'm on it now.",
-}
+QUESTION = re.compile(
+    r"^\s*(?:what|how|when|where|who|why|which|can|could|do|does|did|is|are|will|"
+    r"should|kya|kaise|kab|kahan|enna|eppadi|eppo)\b",
+    re.I,
+)
 
-ESCALATION_NOTE = {
-    "account_compromise": "I've escalated this to our security team as a priority.",
-    "duplicate_payment": "I've escalated this to our billing team to reverse the duplicate charge.",
-    "legal_threat": "I've escalated this to our resolution team, who will contact you.",
-    "fraud": "I've escalated this to our trust and safety team.",
-}
+
+def _looks_like_question(message: str) -> bool:
+    return "?" in message or bool(QUESTION.search(message))
 
 
 @asynccontextmanager
@@ -107,30 +105,27 @@ def chat(body: ChatIn) -> dict:
     )
     store.touch_session(session_id, result["language"])
 
-    escalation = triage.decide_escalation(result, body.message, history)
-    if escalation and not store.has_open_escalation(session_id, escalation["reason"]):
-        store.add_escalation(
-            session_id=session_id,
-            reason=escalation["reason"],
-            condition=escalation["condition"],
-            summary=escalation["summary"],
-            queue=escalation["queue"],
-            risk_level=result["risk"]["level"],
-        )
-        store.audit(
-            "escalation.created",
-            {"session_id": session_id, "reason": escalation["reason"]},
-        )
+    escalation = escalation_engine.handle(session_id, result)
 
-    reply = REPLIES.get(result["sentiment"]["label"], REPLIES["neutral"])
-    if escalation:
-        reply = f"{reply} {ESCALATION_NOTE.get(escalation['reason'], '')}".strip()
+    policy_result = None
+    if _looks_like_question(body.message):
+        policy_result = policy.answer(body.message, requester="customer")
 
-    store.add_message(session_id, "assistant", reply)
+    reply = response.compose(result, policy_result, escalation)
+
+    # No escalation for this message means the conversation is still open; check
+    # whether an older negative streak has crossed the 15-minute timer.
+    if not escalation:
+        escalation = escalation_engine.check_unresolved(session_id)
+        if escalation:
+            reply = response.compose(result, policy_result, escalation)
+
+    store.add_message(session_id, "assistant", reply["reply"])
 
     return {
         "session_id": session_id,
-        "reply": reply,
+        "reply": reply["reply"],
+        "tone": reply["tone"],
         "sentiment": result["sentiment"],
         "risk": result["risk"],
         "language": result["language"],
@@ -138,6 +133,12 @@ def chat(body: ChatIn) -> dict:
         "entities": result["entities"],
         "escalation": escalation,
         "escalated": escalation is not None,
+        "policy": {
+            "status": policy_result["status"] if policy_result else "not_asked",
+            "citations": [c["id"] for c in policy_result["citations"]]
+            if policy_result
+            else [],
+        },
         "source": result["source"],
         "masked_message": security.mask(body.message),
     }
@@ -254,3 +255,28 @@ def reset_config() -> dict:
 @app.get("/admin/audit")
 def audit_tail(limit: int = 50) -> dict:
     return {"items": store.audit_tail(limit)}
+
+
+@app.post("/admin/sweep")
+def sweep_escalations() -> dict:
+    """Run the unresolved-conversation timer now.
+
+    Called automatically on every turn; exposed so simulated time jumps can be
+    evaluated without waiting for the customer to speak again.
+    """
+    created = escalation_engine.sweep()
+    return {"created": len(created), "items": created}
+
+
+@app.get("/admin/calendar")
+def calendar_state() -> dict:
+    from .core import calendar as work_calendar
+
+    moment = clock.now()
+    return {
+        "now": moment.isoformat(),
+        "open": work_calendar.is_open(moment),
+        "next_working_start": work_calendar.next_working_start(moment).isoformat(),
+        "working_days": work_calendar.working_days(),
+        "holidays": sorted(work_calendar.holidays()),
+    }
