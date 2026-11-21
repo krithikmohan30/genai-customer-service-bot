@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS tickets (
     assignee       TEXT,
     sla_due_at     TEXT,
     sla_warned_at  TEXT,
+    sla_breached_at TEXT,
     created_at     TEXT NOT NULL,
     updated_at     TEXT NOT NULL,
     detail         TEXT                             -- JSON blob
@@ -162,6 +163,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE escalations ADD COLUMN sentiment TEXT")
     if "scheduled_for" not in columns:
         conn.execute("ALTER TABLE escalations ADD COLUMN scheduled_for TEXT")
+
+    ticket_columns = {row[1] for row in conn.execute("PRAGMA table_info(tickets)")}
+    if "sla_breached_at" not in ticket_columns:
+        conn.execute("ALTER TABLE tickets ADD COLUMN sla_breached_at TEXT")
 
 
 def query(sql: str, params: tuple | list = ()) -> list[dict]:

@@ -4,6 +4,7 @@ Surfaces built so far:
   step 1  health, chat, simulated time, runtime configuration
   step 2  policy search/ask with citations (Task 4)
   step 3  escalation handling and the 15-minute sweep (Task 1)
+  step 4  ticket SLA clocks: 75% warning and breach escalation (Task 2)
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from pydantic import BaseModel, Field
 from . import db, store
 from .core import clock, config, policy, response, security, triage
 from .core import escalation as escalation_engine
+from .core import sla as sla_engine
 
 QUESTION = re.compile(
     r"^\s*(?:what|how|when|where|who|why|which|can|could|do|does|did|is|are|will|"
@@ -67,6 +69,14 @@ class PolicyIn(BaseModel):
     as_of: str | None = None
     product: str | None = None
     region: str | None = None
+
+
+class TicketIn(BaseModel):
+    subject: str = Field(min_length=2, max_length=200)
+    issue: str = Field(default="", max_length=4000)
+    severity: str = "medium"
+    session_id: str | None = None
+    team: str | None = None
 
 
 # --------------------------------------------------------------------------- health
@@ -257,15 +267,64 @@ def audit_tail(limit: int = 50) -> dict:
     return {"items": store.audit_tail(limit)}
 
 
+# --------------------------------------------------------------------------- tickets
+
+
+def _ticket_payload(ticket: dict) -> dict:
+    return {**ticket, "sla": sla_engine.state(ticket)}
+
+
+@app.post("/tickets")
+def create_ticket(body: TicketIn) -> dict:
+    """Raise a ticket and start its business-hour SLA clock.
+
+    Step 5 derives these fields from the conversation; this endpoint keeps the
+    SLA engine usable on its own (and testable without a chat turn).
+    """
+    severity = body.severity.lower()
+    ticket = store.create_ticket(
+        session_id=body.session_id,
+        subject=body.subject,
+        issue=body.issue,
+        severity=severity,
+        team=body.team,
+    )
+    sla_engine.apply(ticket)
+    store.audit(
+        "ticket.created",
+        {"ticket_id": ticket["id"], "severity": severity},
+    )
+    return _ticket_payload(store.get_ticket(ticket["id"]) or ticket)
+
+
+@app.get("/tickets")
+def list_tickets() -> dict:
+    return {"items": [_ticket_payload(ticket) for ticket in store.open_tickets()]}
+
+
+@app.get("/tickets/{ticket_id}")
+def read_ticket(ticket_id: str) -> dict:
+    ticket = store.get_ticket(ticket_id)
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="ticket not found")
+    return _ticket_payload(ticket)
+
+
 @app.post("/admin/sweep")
 def sweep_escalations() -> dict:
-    """Run the unresolved-conversation timer now.
+    """Run the timers now: unresolved conversations and ticket SLAs.
 
     Called automatically on every turn; exposed so simulated time jumps can be
     evaluated without waiting for the customer to speak again.
     """
     created = escalation_engine.sweep()
-    return {"created": len(created), "items": created}
+    sla_result = sla_engine.sweep()
+    return {
+        "created": len(created),
+        "items": created,
+        "sla_warnings": sla_result["warnings"],
+        "sla_breaches": sla_result["breaches"],
+    }
 
 
 @app.get("/admin/calendar")

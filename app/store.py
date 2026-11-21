@@ -169,6 +169,79 @@ def mark_escalation_resolved(escalation_id: int) -> None:
     )
 
 
+# --------------------------------------------------------------------------- tickets
+
+TICKET_FIELDS = {
+    "subject",
+    "issue",
+    "severity",
+    "priority",
+    "status",
+    "team",
+    "assignee",
+    "sla_due_at",
+    "sla_warned_at",
+    "sla_breached_at",
+    "detail",
+}
+
+
+def create_ticket(
+    session_id: str | None = None,
+    subject: str = "",
+    issue: str = "",
+    severity: str = "medium",
+    priority: float = 0.0,
+    team: str | None = None,
+    assignee: str | None = None,
+    detail: dict | None = None,
+    created_at: str | None = None,
+) -> dict:
+    ticket_id = "TKT-" + uuid.uuid4().hex[:8].upper()
+    now = created_at or clock.now_iso()
+    db.execute(
+        "INSERT INTO tickets (id, session_id, subject, issue, severity, priority,"
+        " status, team, assignee, created_at, updated_at, detail)"
+        " VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)",
+        (
+            ticket_id,
+            session_id,
+            subject,
+            issue,
+            severity,
+            priority,
+            team,
+            assignee,
+            now,
+            now,
+            _dumps(detail),
+        ),
+    )
+    return get_ticket(ticket_id) or {}
+
+
+def get_ticket(ticket_id: str) -> dict | None:
+    return db.query_one("SELECT * FROM tickets WHERE id = ?", (ticket_id,))
+
+
+def open_tickets() -> list[dict]:
+    return db.query(
+        "SELECT * FROM tickets WHERE status NOT IN ('closed', 'resolved') ORDER BY created_at"
+    )
+
+
+def update_ticket(ticket_id: str, **fields) -> dict | None:
+    updates = {key: value for key, value in fields.items() if key in TICKET_FIELDS}
+    if not updates:
+        return get_ticket(ticket_id)
+    assignments = ", ".join(f"{key} = ?" for key in updates)
+    db.execute(
+        f"UPDATE tickets SET {assignments}, updated_at = ? WHERE id = ?",
+        (*updates.values(), clock.now_iso(), ticket_id),
+    )
+    return get_ticket(ticket_id)
+
+
 # --------------------------------------------------------------------------- audit
 
 

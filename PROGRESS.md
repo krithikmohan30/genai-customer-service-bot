@@ -125,3 +125,42 @@ Every record stores reason, condition string, sentiment, masked summary, queue a
 Both cases are covered by unit tests that stub the model output.
 
 **Next:** Step 4 — business calendar SLA engine: 75% warning and breach escalation (Task 2a).
+
+## 2026-11-21 — Step 4: SLA clocks (Task 2a)
+
+**Added**
+
+| File | Purpose |
+|---|---|
+| `app/core/sla.py` | Business-minute SLA per severity, 75% warning, breach escalation, idempotent sweep |
+| `tickets` store helpers | `create_ticket`, `get_ticket`, `open_tickets`, `update_ticket`; `sla_breached_at` column |
+| `POST /tickets`, `GET /tickets`, `GET /tickets/{id}` | Raise and inspect tickets with live SLA position |
+| `POST /admin/sweep` (extended) | Now returns `sla_warnings` and `sla_breaches` alongside escalation timers |
+| `tests/test_step4_sla.py` | 6 tests: weekend, holiday, 75% warning, single breach, runtime change, endpoints |
+| `scripts/smoke_step4.py` | Live server check with simulated time |
+
+**How the clock works**
+
+- Allowed time is measured in business minutes, so weekends and holidays cost nothing.
+- Target by severity: critical 60, high 240, medium 480, low 1440 minutes.
+- Due time = creation + allowed business minutes; warning at 75% consumed (both configurable).
+- Warning is recorded once on the ticket (`sla_warned_at`); a breach sets `sla_breached_at`, marks the ticket `escalated`, and files one `sla_breach` escalation to `supervisor_queue` with the reason, condition and masked subject.
+- Everything reads configuration on each call, so a runtime change applies to tickets already open.
+
+**Verified**
+
+- `python -m pytest tests -q` → **62 passed in 62s**.
+- Friday 17:00, medium (480 min): 90 minutes Friday, 390 Monday → due Monday 16:00; all weekend minutes cost zero.
+- 13:59 Monday = 359/480 (`ok`); 14:00 = 360/480 → `warning`.
+- 16:01 Monday → `breached`, one escalation created; a second sweep creates nothing.
+- 25 Dec holiday: Thursday 17:00 ticket is due Monday 16:00, not Friday.
+- Runtime `sla.by_severity.high: 240 → 60` and `warn_ratio: 0.75 → 0.5` re-dated an open ticket from Monday 12:00 to Friday 18:00, warning at 17:30.
+- Live server (temp DB): ticket due Monday 12:00 → override to 60 min → due Friday 18:00 → at 18:05 sweep reported the breach, status `escalated`, one `sla_breach` record in `supervisor_queue`.
+
+**Decisions**
+
+- SLA uses the same calendar module as after-hours routing, so there is one source of truth for working time.
+- Hidden tests may move the clock backwards; `business_minutes_between` returns 0 when end <= start.
+- Tickets exposed now with explicit fields; Step 5 fills them from the conversation (extraction, priority scoring, routing, dedupe).
+
+**Next:** Step 5 — ticket extraction, priority score, skill routing, dedupe and SLA handoff summary (Task 2b).
