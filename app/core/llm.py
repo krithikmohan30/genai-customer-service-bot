@@ -40,7 +40,12 @@ def _client() -> Any:
         raise LLMError(
             "GOOGLE_API_KEY is not set. Copy .env.example to .env and add a key."
         )
-    return genai.Client(api_key=api_key)
+    from google.genai import types
+
+    # A hung model call must not hold a request thread hostage; triage falls
+    # back to the rules classifier when this timeout fires.
+    http_options = types.HttpOptions(timeout=int(config.get("llm.timeout_ms", 20000)))
+    return genai.Client(api_key=api_key, http_options=http_options)
 
 
 def available() -> bool:

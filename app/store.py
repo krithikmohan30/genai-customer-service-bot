@@ -174,11 +174,17 @@ def mark_escalation_resolved(escalation_id: int) -> None:
 TICKET_FIELDS = {
     "subject",
     "issue",
+    "category",
     "severity",
+    "impact",
     "priority",
     "status",
     "team",
     "assignee",
+    "group_id",
+    "duplicate_of",
+    "route_reason",
+    "scheduled_for",
     "sla_due_at",
     "sla_warned_at",
     "sla_breached_at",
@@ -196,22 +202,37 @@ def create_ticket(
     assignee: str | None = None,
     detail: dict | None = None,
     created_at: str | None = None,
+    customer_id: str | None = None,
+    category: str | None = None,
+    impact: str | None = None,
+    group_id: str | None = None,
+    duplicate_of: str | None = None,
+    route_reason: str | None = None,
+    scheduled_for: str | None = None,
 ) -> dict:
     ticket_id = "TKT-" + uuid.uuid4().hex[:8].upper()
     now = created_at or clock.now_iso()
     db.execute(
-        "INSERT INTO tickets (id, session_id, subject, issue, severity, priority,"
-        " status, team, assignee, created_at, updated_at, detail)"
-        " VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)",
+        "INSERT INTO tickets (id, session_id, customer_id, subject, issue, category,"
+        " severity, impact, priority, status, team, assignee, group_id, duplicate_of,"
+        " route_reason, scheduled_for, created_at, updated_at, detail)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             ticket_id,
             session_id,
+            customer_id,
             subject,
             issue,
+            category,
             severity,
+            impact,
             priority,
             team,
             assignee,
+            group_id,
+            duplicate_of,
+            route_reason,
+            scheduled_for,
             now,
             now,
             _dumps(detail),
@@ -230,10 +251,51 @@ def open_tickets() -> list[dict]:
     )
 
 
+def open_tickets_for(session_id: str) -> list[dict]:
+    return db.query(
+        "SELECT * FROM tickets WHERE session_id = ?"
+        " AND status NOT IN ('closed', 'resolved') ORDER BY created_at",
+        (session_id,),
+    )
+
+
+def open_tickets_by_team(team: str) -> list[dict]:
+    return db.query(
+        "SELECT * FROM tickets WHERE team = ? AND status NOT IN ('closed', 'resolved')",
+        (team,),
+    )
+
+
+def search_tickets(
+    status: str | None = None,
+    team: str | None = None,
+    group: str | None = None,
+    limit: int = 200,
+) -> list[dict]:
+    clauses: list[str] = []
+    params: list = []
+    if status:
+        clauses.append("status = ?")
+        params.append(status)
+    if team:
+        clauses.append("team = ?")
+        params.append(team)
+    if group:
+        clauses.append("(group_id = ? OR id = ?)")
+        params.extend([group, group])
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    return db.query(
+        f"SELECT * FROM tickets {where} ORDER BY priority DESC, created_at LIMIT ?",
+        (*params, int(limit)),
+    )
+
+
 def update_ticket(ticket_id: str, **fields) -> dict | None:
     updates = {key: value for key, value in fields.items() if key in TICKET_FIELDS}
     if not updates:
         return get_ticket(ticket_id)
+    if isinstance(updates.get("detail"), dict):
+        updates["detail"] = _dumps(updates["detail"])
     assignments = ", ".join(f"{key} = ?" for key in updates)
     db.execute(
         f"UPDATE tickets SET {assignments}, updated_at = ? WHERE id = ?",

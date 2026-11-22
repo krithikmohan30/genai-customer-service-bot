@@ -6,6 +6,7 @@ llm:
   model: "gemini-3.5-flash"
   fallback_model: "gemini-3.5-flash-lite"
   temperature: 0.2
+  timeout_ms: 20000
 
 triage:
   mode: "auto"          # auto | llm | rules  (rules = deterministic, used by tests)
@@ -42,17 +43,35 @@ sla:
     medium: 480
     low: 1440
 
+priority:
+  weights:
+    severity: 40
+    sentiment: 20
+    impact: 20
+    wait: 10
+    sla: 10
+  wait_full_minutes: 120   # wait component saturates after two hours
+
+tickets:
+  duplicate_window_minutes: 30
+
 routing:
+  on_call_team: "on_call_support"
+  next_day_team: "next_working_day"
+  overflow_team: "supervisor_queue"
   teams:
     billing:
       skills: ["billing", "payment", "refund"]
       capacity: 5
+      availability: "business_hours"
     technical:
       skills: ["technical", "app", "login", "product"]
       capacity: 5
+      availability: "business_hours"
     trust_safety:
       skills: ["account", "security", "legal", "fraud"]
       capacity: 2
+      availability: "24x7"
   timezone: "Asia/Kolkata"
 
 policy:

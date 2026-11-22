@@ -164,3 +164,57 @@ Both cases are covered by unit tests that stub the model output.
 - Tickets exposed now with explicit fields; Step 5 fills them from the conversation (extraction, priority scoring, routing, dedupe).
 
 **Next:** Step 5 — ticket extraction, priority score, skill routing, dedupe and SLA handoff summary (Task 2b).
+
+## 2026-11-22 — Step 5: structured tickets (Task 2b)
+
+**Added**
+
+| File | Purpose |
+|---|---|
+| `app/core/tickets.py` | Extraction, weighted priority, dedupe/grouping, masked handoff |
+| `app/core/routing.py` | Skill match, availability, workload and business-hours routing |
+| Ticket columns | `customer_id`, `category`, `impact`, `group_id`, `duplicate_of`, `route_reason`, `scheduled_for` |
+| `POST /tickets` (extended) | Accepts `message` and extracts the ticket, or takes explicit fields |
+| `GET /tickets` filters, `POST /tickets/{id}/route`, `POST /tickets/{id}/close`, `GET /tickets/{id}/handoff` | Ticket lifecycle |
+| `/chat` | Now creates or merges a ticket when the intent needs follow-up work |
+| `tests/test_step5_tickets.py` | 13 tests: extraction, priority, routing, dedupe, handoff, chat, API |
+| `scripts/smoke_step5.py` | Live server check for the whole ticket path |
+
+**Structured ticket**
+
+Subject, masked issue, category, severity, impact, priority, team, route reason, scheduled time and the SLA clock. Severity comes from risk first, then urgency: high risk → critical, urgent → high, negative tone → medium, calm informational → low.
+
+**Priority (0–100)**
+
+Weighted components, all runtime-configurable under `priority.weights`: severity 40, sentiment 20, impact 20, wait 10, SLA pressure 10. Impact is organisation / team / individual, detected from scope words. SLA pressure rises as the clock is consumed, so wait time and nearing breach both lift the score.
+
+**Routing**
+
+- Candidates must match the category's skills (or be a legitimate wildcard for complaints).
+- A team outside its availability window, switched off, or at capacity is not eligible.
+- Best score wins: 60% skill match, 25% spare capacity, 15% availability.
+- After hours: a specific 24x7 match still routes (trust & safety); critical work goes to on-call; everything else is queued for the next working 09:30.
+- No eligible team during hours → `supervisor_queue` with reason `no_capacity` or `no_skill_match`. The ticket is never dropped.
+
+**Dedupe and grouping**
+
+Identity is `category + order id/error code/amount/product`. Without an identifier the normalised subject is used, and only within a 30-minute window. A duplicate is merged into the open primary ticket: occurrence count rises, the highest priority is kept, and both share one `group_id`. Distinct order ids stay distinct.
+
+**Verified**
+
+- `python -m pytest tests -q` → **75 passed in 50s**.
+- Live server (temp DB): charged-twice message → `billing_dispute`, critical, priority 66, team billing, SLA due 12:00 within the hour; identical message again → duplicate, same ticket, occurrences 2.
+- Handoff: phone masked to `[PHONE]`, order id preserved, next action names the team and the due time.
+- Friday 22:00 invoice → `next_working_day`, scheduled Monday 09:30; charged-twice after hours → `on_call_support`; billing switched off during hours → `supervisor_queue` / `no_capacity`.
+- Calm "What is the refund policy?" creates no ticket; "Why is my refund delayed?" does.
+
+**Model defects found and fixed**
+
+1. The model's generic intent ("complaint") was flattening evidence-based intents (`billing_dispute`, `account_security`). Rules now keep a specific intent; the model may only fill in when rules see nothing beyond `general_question`.
+2. Order ids were also being reported as error codes. `extract_entities` no longer duplicates the same token under both keys.
+3. A calm policy question was classified `negative` because the word "refund" is in the negative lexicon. Ticket creation now requires a complaint signal in an informational question.
+4. After hours, the wildcard complaint path could land on the 24x7 security desk. A 24x7 match now requires a specific skill match; generic complaints wait for the working day.
+
+Also added a 20s HTTP timeout to the Gemini client so a hung model call falls back to the rules classifier instead of blocking the request.
+
+**Next:** Step 6 — knowledge-base ingestion pipeline: change detection, dedupe, quarantine, versions and rollback (Task 3).

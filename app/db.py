@@ -63,13 +63,20 @@ CREATE INDEX IF NOT EXISTS idx_escalations_session ON escalations(session_id);
 CREATE TABLE IF NOT EXISTS tickets (
     id             TEXT PRIMARY KEY,
     session_id     TEXT,
+    customer_id    TEXT,
     subject        TEXT,
     issue          TEXT,
+    category       TEXT,
     severity       TEXT,
+    impact         TEXT,
     priority       REAL,
     status         TEXT NOT NULL DEFAULT 'open',
     team           TEXT,
     assignee       TEXT,
+    group_id       TEXT,
+    duplicate_of   TEXT,
+    route_reason   TEXT,
+    scheduled_for  TEXT,
     sla_due_at     TEXT,
     sla_warned_at  TEXT,
     sla_breached_at TEXT,
@@ -165,8 +172,18 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE escalations ADD COLUMN scheduled_for TEXT")
 
     ticket_columns = {row[1] for row in conn.execute("PRAGMA table_info(tickets)")}
-    if "sla_breached_at" not in ticket_columns:
-        conn.execute("ALTER TABLE tickets ADD COLUMN sla_breached_at TEXT")
+    for column in (
+        "sla_breached_at",
+        "customer_id",
+        "category",
+        "impact",
+        "group_id",
+        "duplicate_of",
+        "route_reason",
+        "scheduled_for",
+    ):
+        if column not in ticket_columns:
+            conn.execute(f"ALTER TABLE tickets ADD COLUMN {column} TEXT")
 
 
 def query(sql: str, params: tuple | list = ()) -> list[dict]:

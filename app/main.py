@@ -5,6 +5,7 @@ Surfaces built so far:
   step 2  policy search/ask with citations (Task 4)
   step 3  escalation handling and the 15-minute sweep (Task 1)
   step 4  ticket SLA clocks: 75% warning and breach escalation (Task 2)
+  step 5  structured tickets, priority, routing, dedupe, handoff (Task 2)
 """
 
 from __future__ import annotations
@@ -18,7 +19,9 @@ from pydantic import BaseModel, Field
 from . import db, store
 from .core import clock, config, policy, response, security, triage
 from .core import escalation as escalation_engine
+from .core import routing as routing_engine
 from .core import sla as sla_engine
+from .core import tickets as ticket_engine
 
 QUESTION = re.compile(
     r"^\s*(?:what|how|when|where|who|why|which|can|could|do|does|did|is|are|will|"
@@ -72,11 +75,15 @@ class PolicyIn(BaseModel):
 
 
 class TicketIn(BaseModel):
-    subject: str = Field(min_length=2, max_length=200)
+    subject: str | None = Field(default=None, max_length=200)
     issue: str = Field(default="", max_length=4000)
     severity: str = "medium"
     session_id: str | None = None
+    customer_id: str | None = None
+    category: str | None = None
+    impact: str | None = None
     team: str | None = None
+    message: str | None = Field(default=None, max_length=4000)
 
 
 # --------------------------------------------------------------------------- health
@@ -132,6 +139,8 @@ def chat(body: ChatIn) -> dict:
 
     store.add_message(session_id, "assistant", reply["reply"])
 
+    ticket_result = ticket_engine.create_from_chat(session, body.message, result)
+
     return {
         "session_id": session_id,
         "reply": reply["reply"],
@@ -143,6 +152,7 @@ def chat(body: ChatIn) -> dict:
         "entities": result["entities"],
         "escalation": escalation,
         "escalated": escalation is not None,
+        "ticket": _ticket_brief(ticket_result),
         "policy": {
             "status": policy_result["status"] if policy_result else "not_asked",
             "citations": [c["id"] for c in policy_result["citations"]]
@@ -274,32 +284,85 @@ def _ticket_payload(ticket: dict) -> dict:
     return {**ticket, "sla": sla_engine.state(ticket)}
 
 
+def _ticket_brief(result: dict | None) -> dict | None:
+    if not result:
+        return None
+    ticket = result["ticket"]
+    return {
+        "id": ticket["id"],
+        "group_id": ticket.get("group_id"),
+        "subject": ticket.get("subject"),
+        "category": ticket.get("category"),
+        "severity": ticket.get("severity"),
+        "priority": ticket.get("priority"),
+        "status": ticket.get("status"),
+        "team": ticket.get("team"),
+        "route_reason": ticket.get("route_reason"),
+        "scheduled_for": ticket.get("scheduled_for"),
+        "sla_due_at": ticket.get("sla_due_at"),
+        "duplicate": result["duplicate"],
+    }
+
+
+def _explicit_draft(body: TicketIn) -> dict:
+    subject = security.mask((body.subject or body.issue or "Support request").strip())[
+        :200
+    ]
+    issue = security.mask((body.issue or subject).strip())[:4000]
+    category = (body.category or "general_question").lower()
+
+    draft = {
+        "session_id": body.session_id,
+        "customer_id": body.customer_id,
+        "subject": subject,
+        "issue": issue,
+        "category": category,
+        "severity": body.severity.lower(),
+        "impact": (body.impact or "individual").lower(),
+        "sentiment": {"label": "neutral", "confidence": 0.5},
+        "language": "en",
+        "risk": {"level": "none", "categories": []},
+        "entities": {},
+    }
+    draft["fingerprint"] = ticket_engine.fingerprint(category, {}, subject)
+    draft["priority_detail"] = ticket_engine.score(draft)
+    draft["priority"] = draft["priority_detail"]["score"]
+    return draft
+
+
 @app.post("/tickets")
 def create_ticket(body: TicketIn) -> dict:
-    """Raise a ticket and start its business-hour SLA clock.
+    """Raise a ticket from a message (extracted) or from explicit fields.
 
-    Step 5 derives these fields from the conversation; this endpoint keeps the
-    SLA engine usable on its own (and testable without a chat turn).
+    `message` runs triage and extraction, which is the normal path. Explicit
+    fields keep the endpoint usable for agents and for tests.
     """
-    severity = body.severity.lower()
-    ticket = store.create_ticket(
-        session_id=body.session_id,
-        subject=body.subject,
-        issue=body.issue,
-        severity=severity,
-        team=body.team,
-    )
-    sla_engine.apply(ticket)
-    store.audit(
-        "ticket.created",
-        {"ticket_id": ticket["id"], "severity": severity},
-    )
-    return _ticket_payload(store.get_ticket(ticket["id"]) or ticket)
+    if body.message:
+        result = ticket_engine.create_from_text(
+            body.session_id, body.message, body.customer_id
+        )
+    else:
+        result = ticket_engine.create(
+            _explicit_draft(body),
+            team=body.team,
+            severity=body.severity.lower(),
+        )
+    return {
+        **_ticket_payload(result["ticket"]),
+        "duplicate": result["duplicate"],
+        "routing": result["routing"],
+    }
 
 
 @app.get("/tickets")
-def list_tickets() -> dict:
-    return {"items": [_ticket_payload(ticket) for ticket in store.open_tickets()]}
+def list_tickets(
+    status: str | None = None,
+    team: str | None = None,
+    group: str | None = None,
+    limit: int = 200,
+) -> dict:
+    rows = store.search_tickets(status=status, team=team, group=group, limit=limit)
+    return {"count": len(rows), "items": [_ticket_payload(ticket) for ticket in rows]}
 
 
 @app.get("/tickets/{ticket_id}")
@@ -307,7 +370,40 @@ def read_ticket(ticket_id: str) -> dict:
     ticket = store.get_ticket(ticket_id)
     if ticket is None:
         raise HTTPException(status_code=404, detail="ticket not found")
-    return _ticket_payload(ticket)
+    return {**_ticket_payload(ticket), "handoff": ticket_engine.handoff(ticket)}
+
+
+@app.get("/tickets/{ticket_id}/handoff")
+def read_handoff(ticket_id: str) -> dict:
+    ticket = store.get_ticket(ticket_id)
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="ticket not found")
+    return ticket_engine.handoff(ticket)
+
+
+@app.post("/tickets/{ticket_id}/route")
+def reroute_ticket(ticket_id: str) -> dict:
+    """Re-run routing, e.g. after a team went unavailable or the queue filled."""
+    ticket = store.get_ticket(ticket_id)
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="ticket not found")
+    decision = routing_engine.apply(ticket)
+    updated = store.get_ticket(ticket_id) or ticket
+    return {
+        "ticket_id": ticket_id,
+        "routing": decision,
+        "ticket": _ticket_payload(updated),
+    }
+
+
+@app.post("/tickets/{ticket_id}/close")
+def close_ticket(ticket_id: str) -> dict:
+    ticket = store.get_ticket(ticket_id)
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="ticket not found")
+    store.update_ticket(ticket_id, status="resolved")
+    store.audit("ticket.resolved", {"ticket_id": ticket_id})
+    return _ticket_payload(store.get_ticket(ticket_id) or ticket)
 
 
 @app.post("/admin/sweep")

@@ -264,6 +264,15 @@ def extract_entities(text: str) -> dict:
 
     amount = _AMOUNT.search(text)
     error_code = _ERROR_CODE.search(text)
+    code = error_code.group(1) if error_code else None
+    # Order identifiers look like error codes; do not report the same token twice.
+    if code and code.upper().split("-")[0].split("_")[0] in {
+        "ORD",
+        "ORDER",
+        "INV",
+        "TKT",
+    }:
+        code = None
     emails = re.findall(r"\b[\w.+-]+@[\w-]+\.[\w.]{2,}\b", text)
     phones = re.findall(r"(?<!\d)(?:\+91[\s-]?)?[6-9]\d{9}(?!\d)", text)
     product = _PRODUCT_HINTS.search(text)
@@ -271,7 +280,7 @@ def extract_entities(text: str) -> dict:
     return {
         "order_id": order_id,
         "amount": amount.group(1).replace(",", "") if amount else None,
-        "error_code": error_code.group(1) if error_code else None,
+        "error_code": code,
         "product": product.group(0).lower() if product else None,
         "email": emails[0] if emails else None,
         "phone": phones[0] if phones else None,
@@ -478,6 +487,10 @@ def _merge(llm_out: dict, rules: dict, message: str) -> dict:
         language = rules["language"]
 
     intent = str(llm_out.get("intent") or rules["intent"])
+    # Rules already resolve specific intents from evidence. The model may only
+    # fill in when the rules see nothing more specific than "general_question".
+    if rules["intent"] != "general_question":
+        intent = rules["intent"]
 
     return {
         "sentiment": sentiment,
