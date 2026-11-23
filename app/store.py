@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import datetime
 
 from . import db
 from .core import clock, config, security
@@ -302,6 +303,267 @@ def update_ticket(ticket_id: str, **fields) -> dict | None:
         (*updates.values(), clock.now_iso(), ticket_id),
     )
     return get_ticket(ticket_id)
+
+
+# --------------------------------------------------------------------------- jobs
+
+JOB_FIELDS = {"status", "payload", "attempts", "run_after", "last_error"}
+
+
+def add_job(
+    kind: str,
+    payload: dict | None = None,
+    run_after: str | None = None,
+    status: str = "pending",
+) -> str:
+    job_id = "JOB-" + uuid.uuid4().hex[:8].upper()
+    now = clock.now_iso()
+    db.execute(
+        "INSERT INTO jobs (id, kind, status, payload, attempts, run_after,"
+        " created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?, ?)",
+        (job_id, kind, status, _dumps(payload), run_after or now, now, now),
+    )
+    return job_id
+
+
+def get_job(job_id: str) -> dict | None:
+    return db.query_one("SELECT * FROM jobs WHERE id = ?", (job_id,))
+
+
+def due_jobs(
+    at: datetime | None = None, kind: str | None = None, limit: int = 50
+) -> list[dict]:
+    at_iso = (at or clock.now()).isoformat()
+    if kind:
+        return db.query(
+            "SELECT * FROM jobs WHERE status = 'pending' AND kind = ?"
+            " AND (run_after IS NULL OR run_after <= ?) ORDER BY run_after LIMIT ?",
+            (kind, at_iso, int(limit)),
+        )
+    return db.query(
+        "SELECT * FROM jobs WHERE status = 'pending'"
+        " AND (run_after IS NULL OR run_after <= ?) ORDER BY run_after LIMIT ?",
+        (at_iso, int(limit)),
+    )
+
+
+def update_job(job_id: str, **fields) -> dict | None:
+    updates = {key: value for key, value in fields.items() if key in JOB_FIELDS}
+    if not updates:
+        return get_job(job_id)
+    if isinstance(updates.get("payload"), dict):
+        updates["payload"] = _dumps(updates["payload"])
+    assignments = ", ".join(f"{key} = ?" for key in updates)
+    db.execute(
+        f"UPDATE jobs SET {assignments}, updated_at = ? WHERE id = ?",
+        (*updates.values(), clock.now_iso(), job_id),
+    )
+    return get_job(job_id)
+
+
+def jobs_summary() -> dict:
+    rows = db.query("SELECT status, COUNT(*) AS total FROM jobs GROUP BY status")
+    return {row["status"]: row["total"] for row in rows}
+
+
+# --------------------------------------------------------------------------- knowledge
+
+
+DOCUMENT_FIELDS = {
+    "title",
+    "path",
+    "product",
+    "region",
+    "access_level",
+    "effective_at",
+    "expires_at",
+    "content_hash",
+    "quality",
+    "status",
+    "current_version",
+    "health_failures",
+    "last_health_at",
+}
+
+VERSION_FIELDS = {
+    "title",
+    "content",
+    "content_hash",
+    "access_level",
+    "product",
+    "region",
+    "effective_at",
+    "expires_at",
+    "quality",
+    "pii_masked",
+    "status",
+    "activated_at",
+}
+
+
+def add_document(document_id: str, path: str, **fields) -> dict:
+    now = clock.now_iso()
+    values = {
+        "id": document_id,
+        "path": path,
+        "status": "active",
+        "current_version": 1,
+        "created_at": now,
+        "updated_at": now,
+        **fields,
+    }
+    db.execute(
+        "INSERT INTO documents (id, path, title, product, region, access_level,"
+        " effective_at, expires_at, content_hash, quality, status, current_version,"
+        " health_failures, created_at, updated_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
+        (
+            values["id"],
+            values["path"],
+            values.get("title"),
+            values.get("product"),
+            values.get("region"),
+            values.get("access_level"),
+            values.get("effective_at"),
+            values.get("expires_at"),
+            values.get("content_hash"),
+            values.get("quality"),
+            values["status"],
+            values["current_version"],
+            values["created_at"],
+            values["updated_at"],
+        ),
+    )
+    return get_document(document_id) or {}
+
+
+def get_document(document_id: str) -> dict | None:
+    return db.query_one("SELECT * FROM documents WHERE id = ?", (document_id,))
+
+
+def get_document_by_path(path: str) -> dict | None:
+    return db.query_one("SELECT * FROM documents WHERE path = ?", (path,))
+
+
+def list_documents(
+    status: str | None = None, access_levels: list[str] | None = None
+) -> list[dict]:
+    clauses: list[str] = []
+    params: list = []
+    if status:
+        clauses.append("status = ?")
+        params.append(status)
+    if access_levels:
+        placeholders = ", ".join("?" for _ in access_levels)
+        clauses.append(f"access_level IN ({placeholders})")
+        params.extend(access_levels)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    return db.query(
+        f"SELECT * FROM documents {where} ORDER BY updated_at DESC", tuple(params)
+    )
+
+
+def update_document(document_id: str, **fields) -> dict | None:
+    updates = {key: value for key, value in fields.items() if key in DOCUMENT_FIELDS}
+    if not updates:
+        return get_document(document_id)
+    assignments = ", ".join(f"{key} = ?" for key in updates)
+    db.execute(
+        f"UPDATE documents SET {assignments}, updated_at = ? WHERE id = ?",
+        (*updates.values(), clock.now_iso(), document_id),
+    )
+    return get_document(document_id)
+
+
+def add_document_version(
+    document_id: str,
+    version: int,
+    content: str,
+    content_hash: str,
+    status: str = "pending",
+    **fields,
+) -> int:
+    values = {key: value for key, value in fields.items() if key in VERSION_FIELDS}
+    columns = [
+        "document_id",
+        "version",
+        "content",
+        "content_hash",
+        "status",
+        "created_at",
+        *values.keys(),
+    ]
+    params = [
+        document_id,
+        version,
+        content,
+        content_hash,
+        status,
+        clock.now_iso(),
+        *values.values(),
+    ]
+    placeholders = ", ".join("?" for _ in columns)
+    db.execute(
+        f"INSERT INTO document_versions ({', '.join(columns)}) VALUES ({placeholders})",
+        tuple(params),
+    )
+    row = db.query_one(
+        "SELECT * FROM document_versions WHERE document_id = ? AND version = ?",
+        (document_id, version),
+    )
+    return int(row["id"]) if row else 0
+
+
+def get_version(document_id: str, version: int) -> dict | None:
+    return db.query_one(
+        "SELECT * FROM document_versions WHERE document_id = ? AND version = ?",
+        (document_id, version),
+    )
+
+
+def versions(document_id: str) -> list[dict]:
+    return db.query(
+        "SELECT * FROM document_versions WHERE document_id = ? ORDER BY version",
+        (document_id,),
+    )
+
+
+def latest_version(document_id: str) -> dict | None:
+    return db.query_one(
+        "SELECT * FROM document_versions WHERE document_id = ?"
+        " ORDER BY version DESC LIMIT 1",
+        (document_id,),
+    )
+
+
+def active_version(document_id: str) -> dict | None:
+    return db.query_one(
+        "SELECT * FROM document_versions WHERE document_id = ? AND status = 'active'"
+        " ORDER BY version DESC LIMIT 1",
+        (document_id,),
+    )
+
+
+def find_version_by_hash(content_hash: str) -> dict | None:
+    return db.query_one(
+        "SELECT * FROM document_versions WHERE content_hash = ?"
+        " AND status IN ('pending', 'active') ORDER BY version DESC LIMIT 1",
+        (content_hash,),
+    )
+
+
+def update_version(version_id: int, **fields) -> dict | None:
+    updates = {key: value for key, value in fields.items() if key in VERSION_FIELDS}
+    if not updates:
+        return db.query_one(
+            "SELECT * FROM document_versions WHERE id = ?", (version_id,)
+        )
+    assignments = ", ".join(f"{key} = ?" for key in updates)
+    db.execute(
+        f"UPDATE document_versions SET {assignments} WHERE id = ?",
+        (*updates.values(), version_id),
+    )
+    return db.query_one("SELECT * FROM document_versions WHERE id = ?", (version_id,))
 
 
 # --------------------------------------------------------------------------- audit

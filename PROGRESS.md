@@ -218,3 +218,56 @@ Identity is `category + order id/error code/amount/product`. Without an identifi
 Also added a 20s HTTP timeout to the Gemini client so a hung model call falls back to the rules classifier instead of blocking the request.
 
 **Next:** Step 6 — knowledge-base ingestion pipeline: change detection, dedupe, quarantine, versions and rollback (Task 3).
+
+## 2026-11-23 — Step 6: knowledge-base pipeline (Task 3)
+
+**Added**
+
+| File | Purpose |
+|---|---|
+| `app/core/knowledge.py` | Scan, parse, gate, version, activate, roll back, health-check, retry |
+| `documents` / `document_versions` / `jobs` | Extended with titles, quality, access, PII flag, health state, job errors |
+| `store.py` | Job queue helpers and document/version storage |
+| `POST /kb/scan`, `POST /kb/sweep`, `GET /kb/stats` | Pipeline control and monitoring |
+| `GET /kb/docs`, `GET /kb/docs/{id}`, `GET /kb/docs/{id}/versions`, `GET /kb/search` | Access-filtered reads |
+| `POST /kb/docs/{id}/activate`, `POST /kb/docs/{id}/rollback` | Window-aware activation and rollback |
+| `tests/test_step6_knowledge.py` | 12 tests covering every hidden-evaluation hint |
+| `scripts/smoke_step6.py` | Live pipeline run with a temporary incoming folder |
+
+**Pipeline**
+
+1. **Scan** the incoming directory, rejecting unknown file types.
+2. **Parse** YAML front matter; the document id comes from the file, never from guesswork.
+3. **Quarantine** oversized files, empty files, unknown access levels, prompt injection, and anything below the quality gate. The file is moved to the quarantine folder and the rejection is versioned.
+4. **Mask PII** before the content hash is taken, so the stored hash matches what is stored.
+5. **Deduplicate** by content hash: an identical body under another filename is skipped and reported against the document that already owns it.
+6. **Version**: a changed body becomes the next pending version while the old version keeps serving.
+7. **Activate** only inside the maintenance window (01:00–04:00); outside it the activation is scheduled as a job for the next window.
+8. **Retry** failed activations after 15, then 30, then 60 minutes, then mark the job failed with the error.
+9. **Health check** every 5 minutes: hash, length and broken-marker checks; failure auto-rolls back to the previous version, and with no previous version the document is retired.
+
+Access level is stored on the document and every version, and reads run through the same `policy.access_levels` mapping as policy RAG. Activation jobs also run from `/admin/sweep`, so a simulated time jump exercises the whole pipeline.
+
+**Quality gate**
+
+Deterministic score out of 1.0: title 0.15, at least 200 characters 0.2, structure 0.15, product/region/effective metadata 0.2, no TODO/TBD placeholders 0.15, readable sentence length 0.15. The threshold is `knowledge.quality_gate_min_score` and can be changed at runtime.
+
+**Verified**
+
+- `python -m pytest tests -q` → **87 passed in 67s**.
+- Live run (temp DB, temp folder): 3 files scanned → 1 new, 2 quarantined (injection and quality), quarantined files moved out of the incoming folder; sweep activated v1.
+- Editing the file produced v2; v1 stayed active until activation, then became `superseded`.
+- A third version containing `[[broken]]` activated, then the 6-minute health check rolled it back to v2 automatically.
+- Manual rollback moved v2 → v1; version history showed `superseded / active / rolled_back`.
+- Access: a public document visible to `customer`; an internal document visible only to `admin`; direct read as customer returned 404.
+- PII in a document body stored as `[EMAIL]` / `[PHONE]`, with `pii_masked = 1`.
+- Failed activation retried at 02:15, 02:45, 03:45 and then failed with `unknown document`.
+
+**Decisions**
+
+- Quarantine is the default for injection; sanitising is available by configuration. A knowledge base should not silently keep a partially cleaned hostile document.
+- The content hash is computed after masking so the checksum, storage and health check all agree.
+- A bad update never interrupts service: the previous active version keeps answering until a good replacement is activated.
+- Health rollback considers only versions older than the failing one, so it can never "roll forward" to the broken document.
+
+**Next:** Step 7 — Task 5: invoice/screenshot/PDF uploads, OCR, cross-check against the message, background queue and retention.

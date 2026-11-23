@@ -6,6 +6,7 @@ Surfaces built so far:
   step 3  escalation handling and the 15-minute sweep (Task 1)
   step 4  ticket SLA clocks: 75% warning and breach escalation (Task 2)
   step 5  structured tickets, priority, routing, dedupe, handoff (Task 2)
+  step 6  knowledge-base ingestion, versions, health checks (Task 3)
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from pydantic import BaseModel, Field
 from . import db, store
 from .core import clock, config, policy, response, security, triage
 from .core import escalation as escalation_engine
+from .core import knowledge as knowledge_engine
 from .core import routing as routing_engine
 from .core import sla as sla_engine
 from .core import tickets as ticket_engine
@@ -226,6 +228,116 @@ def policy_stats() -> dict:
     return policy.stats()
 
 
+# --------------------------------------------------------------------------- knowledge (Task 3)
+
+
+class ActivateIn(BaseModel):
+    version: int | None = None
+    force: bool = False
+
+
+class RollbackIn(BaseModel):
+    version: int | None = None
+    reason: str = "manual"
+
+
+@app.post("/kb/scan")
+def kb_scan() -> dict:
+    """Detect new and modified files, gate them, and stage versions."""
+    return knowledge_engine.scan()
+
+
+@app.post("/kb/sweep")
+def kb_sweep() -> dict:
+    """Run due activation jobs, then the 5-minute health check."""
+    return knowledge_engine.run_maintenance()
+
+
+@app.get("/kb/stats")
+def kb_stats() -> dict:
+    return knowledge_engine.stats()
+
+
+@app.get("/kb/docs")
+def kb_list(requester: str = "customer") -> dict:
+    rows = knowledge_engine.active_documents(requester)
+    return {
+        "requester": requester,
+        "count": len(rows),
+        "items": [
+            {
+                "id": row["id"],
+                "title": row["title"],
+                "access_level": row["access_level"],
+                "region": row["region"],
+                "version": row["current_version"],
+                "updated_at": row["updated_at"],
+            }
+            for row in rows
+        ],
+    }
+
+
+@app.get("/kb/docs/{document_id}")
+def kb_read(document_id: str, requester: str = "customer") -> dict:
+    detail = knowledge_engine.document_detail(document_id, requester)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="document not found or restricted")
+    return detail
+
+
+@app.get("/kb/docs/{document_id}/versions")
+def kb_versions(document_id: str, requester: str = "admin") -> dict:
+    document = store.get_document(document_id)
+    if document is None or not knowledge_engine.can_read(document, requester):
+        raise HTTPException(status_code=404, detail="document not found or restricted")
+    return {
+        "document_id": document_id,
+        "current_version": document["current_version"],
+        "items": [
+            {
+                "version": row["version"],
+                "status": row["status"],
+                "created_at": row["created_at"],
+                "activated_at": row["activated_at"],
+                "content_hash": row["content_hash"],
+                "quality": row["quality"],
+            }
+            for row in store.versions(document_id)
+        ],
+    }
+
+
+@app.post("/kb/docs/{document_id}/activate")
+def kb_activate(document_id: str, body: ActivateIn) -> dict:
+    """Activate a staged version; outside the window it is scheduled instead."""
+    if store.get_document(document_id) is None:
+        raise HTTPException(status_code=404, detail="document not found")
+    try:
+        return knowledge_engine.activate(document_id, body.version, force=body.force)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/kb/docs/{document_id}/rollback")
+def kb_rollback(document_id: str, body: RollbackIn) -> dict:
+    if store.get_document(document_id) is None:
+        raise HTTPException(status_code=404, detail="document not found")
+    try:
+        return knowledge_engine.rollback(document_id, body.version, reason=body.reason)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/kb/search")
+def kb_search(q: str, requester: str = "customer", limit: int = 5) -> dict:
+    return {
+        "query": q,
+        "requester": requester,
+        "items": knowledge_engine.search(q, requester, limit),
+    }
+
+
 # --------------------------------------------------------------------------- admin
 
 
@@ -415,11 +527,16 @@ def sweep_escalations() -> dict:
     """
     created = escalation_engine.sweep()
     sla_result = sla_engine.sweep()
+    kb_result = knowledge_engine.run_maintenance()
     return {
         "created": len(created),
         "items": created,
         "sla_warnings": sla_result["warnings"],
         "sla_breaches": sla_result["breaches"],
+        "knowledge": {
+            "jobs": kb_result["jobs"]["processed"],
+            "health": kb_result["health"]["results"],
+        },
     }
 
 

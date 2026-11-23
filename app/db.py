@@ -88,14 +88,18 @@ CREATE TABLE IF NOT EXISTS tickets (
 CREATE TABLE IF NOT EXISTS documents (
     id            TEXT PRIMARY KEY,
     path          TEXT NOT NULL,
+    title         TEXT,
     product       TEXT,
     region        TEXT,
     access_level  TEXT,
     effective_at  TEXT,
     expires_at    TEXT,
     content_hash  TEXT,
+    quality       REAL,
     status        TEXT NOT NULL DEFAULT 'active',   -- active | quarantined | retired
     current_version INTEGER NOT NULL DEFAULT 1,
+    health_failures INTEGER NOT NULL DEFAULT 0,
+    last_health_at TEXT,
     created_at    TEXT NOT NULL,
     updated_at    TEXT NOT NULL
 );
@@ -104,10 +108,17 @@ CREATE TABLE IF NOT EXISTS document_versions (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     document_id  TEXT NOT NULL REFERENCES documents(id),
     version      INTEGER NOT NULL,
+    title        TEXT,
     content      TEXT NOT NULL,
     content_hash TEXT NOT NULL,
-    status       TEXT NOT NULL DEFAULT 'pending',   -- pending | active | rejected | rolled_back
+    access_level TEXT,
+    product      TEXT,
+    region       TEXT,
+    effective_at TEXT,
+    expires_at   TEXT,
     quality      TEXT,                              -- JSON blob
+    pii_masked   INTEGER NOT NULL DEFAULT 0,
+    status       TEXT NOT NULL DEFAULT 'pending',   -- pending | active | superseded | rejected | rolled_back
     created_at   TEXT NOT NULL,
     activated_at TEXT,
     UNIQUE(document_id, version)
@@ -132,6 +143,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     payload     TEXT,
     attempts    INTEGER NOT NULL DEFAULT 0,
     run_after   TEXT,
+    last_error  TEXT,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );
@@ -184,6 +196,38 @@ def _migrate(conn: sqlite3.Connection) -> None:
     ):
         if column not in ticket_columns:
             conn.execute(f"ALTER TABLE tickets ADD COLUMN {column} TEXT")
+
+    _add_missing(
+        conn,
+        "documents",
+        {
+            "title": "TEXT",
+            "quality": "REAL",
+            "health_failures": "INTEGER NOT NULL DEFAULT 0",
+            "last_health_at": "TEXT",
+        },
+    )
+    _add_missing(
+        conn,
+        "document_versions",
+        {
+            "title": "TEXT",
+            "access_level": "TEXT",
+            "product": "TEXT",
+            "region": "TEXT",
+            "effective_at": "TEXT",
+            "expires_at": "TEXT",
+            "pii_masked": "INTEGER NOT NULL DEFAULT 0",
+        },
+    )
+    _add_missing(conn, "jobs", {"last_error": "TEXT"})
+
+
+def _add_missing(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
+    present = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    for column, definition in columns.items():
+        if column not in present:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def query(sql: str, params: tuple | list = ()) -> list[dict]:

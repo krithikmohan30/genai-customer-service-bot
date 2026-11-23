@@ -91,6 +91,12 @@ knowledge:
     start: "01:00"
     end: "04:00"
 
+  incoming_dir: "data/knowledge/incoming"
+  quarantine_dir: "data/knowledge/quarantine"
+  allowed_types: ["md", "txt"]
+  access_levels: ["public", "customer", "agent", "internal"]
+  injection_action: "quarantine"   # quarantine | sanitise
+  health_fail_limit: 1
   retry_minutes: [15, 30, 60]
   health_check_minutes: 5
   quarantine_max_mb: 5
