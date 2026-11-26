@@ -372,3 +372,36 @@ Ids (`ORD-`, `INV-`, `TKT-`, `ORDER-`, `INVOICE-`, `TICKET-`), error codes (`E-4
 - The 24-hour restore window starts when the session expires, not when it was last used.
 - Customer binding is enforced only when the request names a customer: a session with an owner cannot be taken over, but anonymous continuation still works.
 - Assistant replies now store their language too, so the context endpoint and UI show a real conversation history.
+
+## 2026-11-26 - Step 9: Streamlit demo console
+
+**Added**
+
+- `ui/app.py`: Chat, Tickets, Policy, Knowledge, Uploads and Ops tabs using the
+  existing FastAPI service.
+- Policy controls expose historical date, product, region and requester filters,
+  with the answer and citation metadata shown together.
+- Ticket controls expose routing, resolution and the complete masked handoff.
+- Upload controls submit multipart evidence and show extracted fields,
+  mismatches, masking and queue/retention results.
+- `ui/README.md`: PowerShell startup commands and a six-part demo walkthrough.
+- `tests/test_step9_ui.py`: Streamlit AppTest exercises the real FastAPI handlers
+  through TestClient, with deterministic triage and no model calls.
+
+**Fixed during verification**
+
+- Session-id display now follows chat creation and session closure across reruns.
+- Missing KB version history displays an API error instead of crashing the UI.
+- Failed configuration updates no longer display success.
+- Ticket team filters are URL-encoded and labelled as exact matches.
+- KB metric values use the actual nested statistics response.
+
+**Verified**
+
+- `python -m pytest -q`: **110 passed in 37.13s**.
+- UI checks cover chat creation, session display/closure, missing-document errors,
+  runtime configuration and the combined maintenance sweep.
+- Verification used Streamlit's simulated UI runtime, not a browser recording.
+
+**Next:** prepare the final project README and demo-video script, then record
+and check the submission links.

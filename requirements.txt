@@ -4,6 +4,7 @@ uvicorn[standard]>=0.30,<1
 pydantic>=2.7,<3
 pyyaml>=6.0
 streamlit>=1.40,<2
+requests>=2.32,<3
 langchain>=0.3,<0.4
 langchain-community>=0.3,<0.4
 langchain-huggingface>=0.1,<0.4
