@@ -11,6 +11,11 @@ google-genai>=3.3
 faiss-cpu>=1.8
 sentence-transformers>=3,<6
 python-dotenv>=1.0
+python-multipart>=0.0.20
+pillow>=10
+pytesseract>=0.3.10
+pymupdf>=1.24
+pypdf>=5
 
 # dev / test
 pytest>=8,<9

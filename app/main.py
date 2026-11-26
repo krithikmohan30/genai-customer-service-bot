@@ -7,14 +7,17 @@ Surfaces built so far:
   step 4  ticket SLA clocks: 75% warning and breach escalation (Task 2)
   step 5  structured tickets, priority, routing, dedupe, handoff (Task 2)
   step 6  knowledge-base ingestion, versions, health checks (Task 3)
+  step 7  uploads: OCR, cross-check, queue and retention (Task 5)
 """
 
 from __future__ import annotations
 
+import json
 import re
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from . import db, store
@@ -24,6 +27,7 @@ from .core import knowledge as knowledge_engine
 from .core import routing as routing_engine
 from .core import sla as sla_engine
 from .core import tickets as ticket_engine
+from .core import uploads as upload_engine
 
 QUESTION = re.compile(
     r"^\s*(?:what|how|when|where|who|why|which|can|could|do|does|did|is|are|will|"
@@ -338,6 +342,108 @@ def kb_search(q: str, requester: str = "customer", limit: int = 5) -> dict:
     }
 
 
+# --------------------------------------------------------------------------- uploads (Task 5)
+
+
+def _upload_payload(upload: dict) -> dict:
+    payload = {**upload}
+    raw = payload.get("extracted")
+    if raw:
+        try:
+            payload["extracted"] = json.loads(raw)
+        except (ValueError, TypeError):
+            payload["extracted"] = None
+    else:
+        payload["extracted"] = None
+    return payload
+
+
+@app.post("/uploads")
+def create_upload(
+    file: UploadFile = File(...),
+    session_id: str | None = Form(None),
+    message: str | None = Form(None),
+) -> dict:
+    """Receive an invoice, screenshot or PDF; OCR it now or queue it."""
+    data = file.file.read()
+    filename = file.filename or "upload"
+    try:
+        result = upload_engine.receive(
+            filename,
+            data,
+            session_id=session_id,
+            message=message,
+            content_type=file.content_type,
+        )
+    except upload_engine.UnsafeFile as exc:
+        reason = str(exc.args[0]) if exc.args else "unsafe_file"
+        detail = exc.args[1] if len(exc.args) > 1 else {}
+        row = store.add_upload(
+            filename=Path(filename).name,
+            session_id=session_id,
+            mime=file.content_type,
+            size_bytes=len(data),
+            message=security.mask(message) if message else None,
+            status="rejected",
+            reason=reason,
+        )
+        store.audit(
+            "upload.rejected",
+            {"upload_id": row["id"], "reason": reason, "details": detail},
+        )
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "upload_id": row["id"],
+                "status": "rejected",
+                "reason": reason,
+                "details": detail,
+            },
+        ) from exc
+
+    return {
+        "upload_id": result["id"],
+        "status": result["status"],
+        "queued": result.get("queued", False),
+        "estimate_seconds": result.get("estimate_seconds"),
+        "reason": result.get("reason"),
+        "delete_at": result.get("delete_at"),
+        "extracted": _upload_payload(result).get("extracted"),
+    }
+
+
+@app.post("/uploads/sweep")
+def uploads_sweep() -> dict:
+    """Run queued OCR jobs and delete uploads past retention."""
+    return upload_engine.run_maintenance()
+
+
+@app.get("/uploads")
+def list_uploads(session_id: str | None = None, status: str | None = None) -> dict:
+    rows = store.list_uploads(session_id=session_id, status=status)
+    return {"count": len(rows), "items": [_upload_payload(row) for row in rows]}
+
+
+@app.get("/uploads/{upload_id}")
+def read_upload(upload_id: str) -> dict:
+    row = store.get_upload(upload_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="upload not found")
+    return _upload_payload(row)
+
+
+@app.post("/uploads/{upload_id}/process")
+def process_upload(upload_id: str) -> dict:
+    """Force synchronous processing (admin path for a queued upload)."""
+    if store.get_upload(upload_id) is None:
+        raise HTTPException(status_code=404, detail="upload not found")
+    try:
+        upload_engine.process(upload_id)
+    except upload_engine.ProcessingError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _upload_payload(store.get_upload(upload_id) or {})
+
+
 # --------------------------------------------------------------------------- admin
 
 
@@ -528,6 +634,7 @@ def sweep_escalations() -> dict:
     created = escalation_engine.sweep()
     sla_result = sla_engine.sweep()
     kb_result = knowledge_engine.run_maintenance()
+    upload_result = upload_engine.run_maintenance()
     return {
         "created": len(created),
         "items": created,
@@ -537,6 +644,7 @@ def sweep_escalations() -> dict:
             "jobs": kb_result["jobs"]["processed"],
             "health": kb_result["health"]["results"],
         },
+        "uploads": upload_result,
     }
 
 

@@ -103,10 +103,15 @@ knowledge:
   quality_gate_min_score: 0.6
 
 uploads:
+  dir: "data/uploads"
   retention_hours: 24
   processing_timeout_seconds: 30
   allowed_types: ["png", "jpg", "jpeg", "pdf", "webp"]
   max_mb: 10
+  tesseract_cmd: "C:/Program Files/Tesseract-OCR/tesseract.exe"
+  ocr_languages: "eng"
+  force_queue: false
+  retry_minutes: [5, 15, 30]
 
 sessions:
   inactivity_minutes: 30

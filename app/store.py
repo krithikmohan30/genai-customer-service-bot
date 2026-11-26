@@ -566,6 +566,105 @@ def update_version(version_id: int, **fields) -> dict | None:
     return db.query_one("SELECT * FROM document_versions WHERE id = ?", (version_id,))
 
 
+# --------------------------------------------------------------------------- uploads
+
+UPLOAD_FIELDS = {
+    "session_id",
+    "filename",
+    "mime",
+    "path",
+    "size_bytes",
+    "message",
+    "sha256",
+    "status",
+    "extracted",
+    "reason",
+    "attempts",
+    "processing_ms",
+    "processed_at",
+    "delete_at",
+}
+
+
+def add_upload(
+    filename: str,
+    session_id: str | None = None,
+    mime: str | None = None,
+    path: str | None = None,
+    size_bytes: int = 0,
+    message: str | None = None,
+    sha256: str | None = None,
+    status: str = "received",
+    reason: str | None = None,
+    delete_at: str | None = None,
+) -> dict:
+    upload_id = "UP-" + uuid.uuid4().hex[:8].upper()
+    db.execute(
+        "INSERT INTO uploads (id, session_id, filename, mime, path, size_bytes,"
+        " message, sha256, status, reason, created_at, delete_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            upload_id,
+            session_id,
+            filename,
+            mime,
+            path,
+            int(size_bytes),
+            message,
+            sha256,
+            status,
+            reason,
+            clock.now_iso(),
+            delete_at,
+        ),
+    )
+    return get_upload(upload_id) or {}
+
+
+def get_upload(upload_id: str) -> dict | None:
+    return db.query_one("SELECT * FROM uploads WHERE id = ?", (upload_id,))
+
+
+def list_uploads(
+    session_id: str | None = None, status: str | None = None, limit: int = 100
+) -> list[dict]:
+    clauses: list[str] = []
+    params: list = []
+    if session_id:
+        clauses.append("session_id = ?")
+        params.append(session_id)
+    if status:
+        clauses.append("status = ?")
+        params.append(status)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    return db.query(
+        f"SELECT * FROM uploads {where} ORDER BY created_at DESC LIMIT ?",
+        (*params, int(limit)),
+    )
+
+
+def update_upload(upload_id: str, **fields) -> dict | None:
+    updates = {key: value for key, value in fields.items() if key in UPLOAD_FIELDS}
+    if not updates:
+        return get_upload(upload_id)
+    if isinstance(updates.get("extracted"), dict):
+        updates["extracted"] = _dumps(updates["extracted"])
+    assignments = ", ".join(f"{key} = ?" for key in updates)
+    db.execute(
+        f"UPDATE uploads SET {assignments} WHERE id = ?",
+        (*updates.values(), upload_id),
+    )
+    return get_upload(upload_id)
+
+
+def expired_uploads(at_iso: str) -> list[dict]:
+    return db.query(
+        "SELECT * FROM uploads WHERE status != 'deleted'"
+        " AND delete_at IS NOT NULL AND delete_at <= ? ORDER BY delete_at",
+        (at_iso,),
+    )
+
+
 # --------------------------------------------------------------------------- audit
 
 

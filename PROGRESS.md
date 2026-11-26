@@ -271,3 +271,49 @@ Deterministic score out of 1.0: title 0.15, at least 200 characters 0.2, structu
 - Health rollback considers only versions older than the failing one, so it can never "roll forward" to the broken document.
 
 **Next:** Step 7 — Task 5: invoice/screenshot/PDF uploads, OCR, cross-check against the message, background queue and retention.
+
+
+## 2026-11-26 - Step 7: upload OCR and cross-check (Task 5)
+
+**Added**
+
+| File | Purpose |
+|---|---|
+| `app/core/uploads.py` | Sniffing, OCR, injection strip, PII mask, field extraction, cross-check, queue, retention |
+| `uploads` / `jobs` | Store every file with sha256, masked message, status, timings and a delete time |
+| `POST /uploads` | Multipart receive: process now, or queue when the work looks slow |
+| `GET /uploads`, `GET /uploads/{id}`, `POST /uploads/{id}/process` | Inspect an upload, retry it synchronously |
+| `POST /uploads/sweep` | Process queued jobs and delete expired files; also runs inside `POST /admin/sweep` |
+| `tests/test_step7_uploads.py` | 10 tests: OCR, mismatch, no invention, masking, unsafe files, size, queue, retry, retention, PDF |
+| `scripts/smoke_step7.py` | Live run against a real server with a temporary upload folder |
+
+**Pipeline**
+
+1. **Sniff the bytes**, not the extension. Executables and archives (`MZ`, `PK`, ELF, shebang), unknown content and declared-type mismatches are rejected before anything is written.
+2. **Reject unsafe PDFs**: `/JavaScript`, `/OpenAction`, `/Launch` and `/EmbeddedFile` markers are refused, so a PDF cannot run code or drop a file.
+3. **Enforce limits**: allowed extensions, non-empty files, `uploads.max_mb`.
+4. **OCR**: images through Tesseract (`uploads.tesseract_cmd`, `uploads.ocr_languages`), PDFs through the text layer first and Tesseract on pages with no usable text.
+5. **Treat the document as evidence, not instructions**: extracted text runs through the injection sanitiser, then PII masking, before storage.
+6. **Extract only what is there**: invoice id, order id, amount, date. When several amounts exist and there is no total line, `amount` stays `null` and the candidates are listed.
+7. **Cross-check against the message**: matches, mismatches, only-in-document and only-in-message. A mismatch reports both values; the document value is never overwritten and the message value is never averaged in.
+8. **Queue slow work**: work estimated above `uploads.processing_timeout_seconds` (30s) becomes a `upload.process` job, retried after 5, 15 and 30 minutes, then marked failed.
+9. **Retention**: after `uploads.retention_hours` (24) the file is deleted from disk, the extracted text is cleared and the row stays as a tombstone with `status=deleted` and `reason=retention_expired`.
+
+**Verified**
+
+- `python -m pytest tests -q` -> **97 passed in 72s** (87 existing + 10 new).
+- Live run: a generated invoice image returned `INV-99887`, `1200.0` and `2026-11-21`, with invoice id and amount matched against the message.
+- Message claiming Rs 5000 against a Rs 1200 invoice produced one mismatch carrying both values; the document value stayed `1200.0`.
+- A document with an email and a phone stored `[EMAIL]` and `[PHONE]` and reported `pii = [EMAIL, PHONE]`.
+- Executable, `.exe` and hostile PDF uploads were rejected with `unsafe_content`, `unsupported_type` and `unsafe_pdf`.
+- With `uploads.force_queue=true` the upload returned `queued`, the sweep processed the job, and the stored row became `processed` with the right amount.
+- After a 2-hour clock jump the file was unlinked, the row became `deleted` and `extracted` was `None`.
+- A missing file retried at 5, 15 and 30 minutes and then failed with the last error kept on the job.
+
+**Decisions**
+
+- OCR output is masked before it is stored, so the database never holds the raw email or phone even for an admin.
+- A single stray amount is still an amount; ambiguity is only declared when there is more than one candidate and no total line. Guessing was the failure mode to avoid.
+- The invoice id is recognised as the reference it is: `INV-40001` in a message is not also reported as a missing order id.
+- Uploads are rejected before storage when unsafe, but the rejection is still recorded as an audit row so a repeated attacker is visible.
+- PDF text layer first: it is exact and cheap; OCR is the fallback for scans, not the default.

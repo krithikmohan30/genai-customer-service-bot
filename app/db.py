@@ -128,11 +128,18 @@ CREATE TABLE IF NOT EXISTS uploads (
     id          TEXT PRIMARY KEY,
     session_id  TEXT,
     filename    TEXT,
+    mime        TEXT,
+    path        TEXT,
+    size_bytes  INTEGER,
+    message     TEXT,
     sha256      TEXT,
     status      TEXT NOT NULL DEFAULT 'received',   -- received | queued | processed | rejected | deleted
     extracted   TEXT,                               -- JSON blob
     reason      TEXT,
+    attempts    INTEGER NOT NULL DEFAULT 0,
+    processing_ms INTEGER,
     created_at  TEXT NOT NULL,
+    processed_at TEXT,
     delete_at   TEXT
 );
 
@@ -221,6 +228,19 @@ def _migrate(conn: sqlite3.Connection) -> None:
         },
     )
     _add_missing(conn, "jobs", {"last_error": "TEXT"})
+    _add_missing(
+        conn,
+        "uploads",
+        {
+            "mime": "TEXT",
+            "path": "TEXT",
+            "size_bytes": "INTEGER",
+            "message": "TEXT",
+            "attempts": "INTEGER NOT NULL DEFAULT 0",
+            "processing_ms": "INTEGER",
+            "processed_at": "TEXT",
+        },
+    )
 
 
 def _add_missing(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
