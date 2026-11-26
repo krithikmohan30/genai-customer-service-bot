@@ -65,8 +65,13 @@ ESCALATED = {
 COMPLAINT_TONES = {"negative", "frustrated", "urgent", "sarcastic"}
 
 
-def _language(language: str | None) -> str:
-    return language if language in LANGUAGES else "en"
+def _language(language: str | None, present: list[str] | None = None) -> str:
+    if language in LANGUAGES:
+        return language
+    for candidate in present or []:
+        if candidate in LANGUAGES:
+            return candidate
+    return "en"
 
 
 def compose(
@@ -75,7 +80,9 @@ def compose(
     escalation: dict | None = None,
 ) -> dict:
     """Build the customer-facing reply for one turn."""
-    language = _language(triage.get("language"))
+    language = _language(
+        triage.get("language"), [str(item) for item in triage.get("languages") or []]
+    )
     label = str(triage.get("sentiment", {}).get("label", "neutral"))
     tone = str(triage.get("sentiment", {}).get("tone", "professional"))
 

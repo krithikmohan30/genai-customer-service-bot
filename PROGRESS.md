@@ -317,3 +317,58 @@ Deterministic score out of 1.0: title 0.15, at least 200 characters 0.2, structu
 - The invoice id is recognised as the reference it is: `INV-40001` in a message is not also reported as a missing order id.
 - Uploads are rejected before storage when unsafe, but the rejection is still recorded as an audit row so a repeated attacker is visible.
 - PDF text layer first: it is exact and cheap; OCR is the fallback for scans, not the default.
+
+
+## 2026-11-26 - Step 8: multilingual sessions (Task 6)
+
+**Added**
+
+| File | Purpose |
+|---|---|
+| `app/core/sessions.py` | Language detection per turn, session lifecycle, context, references, carry-over |
+| `sessions` columns | `restore_until`, `expired_at`, `restored_at`, `closed_at` |
+| `config.yaml` | `sessions.languages`, `sessions.bind_customer` |
+| `GET /sessions`, `GET /sessions/settings`, `GET /sessions/{id}/context` | Inspect sessions and the configured windows |
+| `POST /sessions/{id}/close`, `POST /sessions/sweep` | Close a conversation, expire/archive idle ones |
+| `/admin/sweep` | Now also expires and archives sessions |
+| `tests/test_step8_sessions.py` | 10 tests covering switches, mixed messages, 10-message context, isolation, expiry, restore, config, sweep, close |
+| `scripts/smoke_step8.py` | Live run with ASCII-only output |
+
+**Language handling**
+
+1. **Script first**: Devanagari is Hindi, Tamil script is Tamil.
+2. **Transliteration**: loanword lists separate Hinglish from Tanglish; both present is `mixed`.
+3. **Mixed messages**: Latin words beside an Indian script are recorded as two languages (`ta` + `en`, dominant script). The reply uses the dominant language, so a Tamil sentence with English nouns is answered in Tamil.
+4. **Rules beat the model on language.** Live testing showed the LLM calling Tanglish "Hinglish"; the lexical/script detection now wins whenever it has a signal, and the model only refines `en` turns.
+5. **Every turn keeps its language**, so switching mid-conversation is visible in `/sessions/{id}/context` and in the audit log (`session.language_switched`).
+
+**Session lifecycle**
+
+- `active` -> after 30 idle minutes -> `expired`; the row keeps its history.
+- Returning within 24 hours restores the same session id, history and language (`restored: true`, `resumed_within_restore_window`).
+- Returning after 24 hours archives the old session and starts a new one (`restore_window_passed`) with no carried references.
+- `close` and `archived` sessions are never resumed; a new session starts (`previous_closed`).
+- Both windows and the language list are runtime overrides; `/sessions/settings` reports them.
+- Context is never less than ten messages (`sessions.context_messages` has a floor of 10).
+
+**Reference preservation**
+
+Ids (`ORD-`, `INV-`, `TKT-`, `ORDER-`, `INVOICE-`, `TICKET-`), error codes (`E-402`, `ERR-...`), amounts (`Rs 4,500`) and dates (`12/11/2026`) are read from recent customer turns. When a new turn omits them, they are merged into the turn's entities and reported in `carried_entities`, so the ticket and handoff keep the reference after a language switch. Nothing is rewritten or translated.
+
+**Verified**
+
+- `python -m pytest -q` -> **107 passed in 44s** (97 existing + 10 new).
+- Live: English turn `ORD-55551`, then a Tamil turn without the id -> reply in Tamil, `switched_from=en`, order id carried into the entities.
+- Live: Tanglish + English returned `tanglish` with `languages=[tanglish, en]` and `mixed=true`; Tamil script + English returned `ta`; Hinglish and Hindi both detected.
+- Live: invoice, date, amount and error code from message 1 were still carried after five filler turns and a switch to Tamil.
+- Live: a second customer presenting the same session id got `403 session belongs to another customer`.
+- Live: 31-minute gap -> same session id restored with the order id; 26-hour gap -> new session, old one `archived`.
+- Live: close -> returning creates a new session with lifecycle `previous_closed`.
+- Sweep expired idle sessions and archived those past the restore deadline.
+
+**Decisions**
+
+- Expiry is checked on both read and sweep, so a customer returning after an hour is restored with correct history even if nobody ran the sweep.
+- The 24-hour restore window starts when the session expires, not when it was last used.
+- Customer binding is enforced only when the request names a customer: a session with an owner cannot be taken over, but anonymous continuation still works.
+- Assistant replies now store their language too, so the context endpoint and UI show a real conversation history.

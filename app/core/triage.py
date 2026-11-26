@@ -237,21 +237,46 @@ def _confidence(base: float, hits: int, cap: float = 0.96) -> float:
 
 
 def guess_language(text: str) -> str:
-    """Script and loanword detector. Step 6 refines it; it is shared from here."""
-    if re.search(r"[\u0900-\u097F]", text):
-        return "hi"
-    if re.search(r"[\u0B80-\u0BFF]", text):
-        return "ta"
+    """Dominant language only. Kept for callers that need one value."""
+    return detect_languages(text)["language"]
 
+
+def detect_languages(text: str) -> dict:
+    """Dominant language plus every language visibly present in the message.
+
+    A Tamil sentence with English nouns is not "Tamil only": the customer
+    switched mid-sentence, and a later turn may switch fully. Both are recorded
+    so the session can follow the customer instead of pinning the first guess.
+    """
+    devanagari = bool(re.search(r"[\u0900-\u097F]", text))
+    tamil = bool(re.search(r"[\u0B80-\u0BFF]", text))
+    latin_words = re.findall(r"[A-Za-z]{2,}", text)
     hinglish = bool(_HINGLISH_WORDS.search(text))
     tanglish = bool(_TANGLISH_WORDS.search(text))
-    if hinglish and tanglish:
-        return "mixed"
-    if hinglish:
-        return "hinglish"
-    if tanglish:
-        return "tanglish"
-    return "en"
+
+    languages: list[str] = []
+    if devanagari:
+        languages.append("hi")
+    if tamil:
+        languages.append("ta")
+    if not devanagari and not tamil:
+        if hinglish:
+            languages.append("hinglish")
+        if tanglish:
+            languages.append("tanglish")
+    if latin_words and languages and "en" not in languages:
+        languages.append("en")
+    if not languages:
+        languages.append("en")
+
+    dominant = languages[0]
+    if "hinglish" in languages and "tanglish" in languages:
+        dominant = "mixed"
+    return {
+        "language": dominant,
+        "languages": languages,
+        "mixed": len(languages) > 1,
+    }
 
 
 def extract_entities(text: str) -> dict:
@@ -378,10 +403,13 @@ def _rule_classify(message: str, history: list[str] | None = None) -> dict:
     sentiment = _rule_sentiment(message, history)
     risk = _rule_risk(message)
     sentiment["tone"] = TONE[sentiment["label"]]
+    detected = detect_languages(message)
     return {
         "sentiment": sentiment,
         "risk": risk,
-        "language": guess_language(message),
+        "language": detected["language"],
+        "languages": detected["languages"],
+        "mixed": detected["mixed"],
         "entities": extract_entities(message),
         "intent": _rule_intent(message, risk, sentiment),
         "source": "rules",
@@ -397,7 +425,7 @@ Return ONLY a JSON object, no prose, no code fences:
 {{
   "sentiment": {{"label": "positive|neutral|negative|frustrated|urgent|sarcastic", "confidence": 0.0}},
   "risk": {{"level": "none|low|medium|high", "categories": ["account_compromise|duplicate_payment|legal_threat|fraud"], "confidence": 0.0}},
-  "language": "en|hi|ta|hinglish|mixed",
+  "language": "en|hi|ta|tanglish|hinglish|mixed",
   "intent": "short_snake_case_label",
   "entities": {{"order_id": null, "amount": null, "product": null, "error_code": null}}
 }}
@@ -482,9 +510,17 @@ def _merge(llm_out: dict, rules: dict, message: str) -> dict:
         if value and not entities.get(key):
             entities[key] = value
 
-    language = str(llm_out.get("language") or rules["language"])
-    if language not in ("en", "hi", "ta", "hinglish", "mixed"):
-        language = rules["language"]
+    rules_language = rules["language"]
+    language = str(llm_out.get("language") or rules_language)
+    if language not in ("en", "hi", "ta", "hinglish", "tanglish", "mixed"):
+        language = rules_language
+    # Script and transliteration are stronger evidence than the model's guess:
+    # a Tamil-script turn stays Tamil even if the model calls it "mixed".
+    if rules_language != "en":
+        language = rules_language
+    languages = list(rules.get("languages") or [rules_language])
+    if rules_language == "en" and language not in languages:
+        languages.append(language)
 
     intent = str(llm_out.get("intent") or rules["intent"])
     # Rules already resolve specific intents from evidence. The model may only
@@ -496,6 +532,8 @@ def _merge(llm_out: dict, rules: dict, message: str) -> dict:
         "sentiment": sentiment,
         "risk": risk,
         "language": language,
+        "languages": languages,
+        "mixed": len(languages) > 1,
         "entities": entities,
         "intent": intent,
         "source": "llm+rules",

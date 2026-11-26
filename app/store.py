@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from . import db
 from .core import clock, config, security
@@ -23,13 +23,75 @@ def get_session(session_id: str) -> dict | None:
 
 def create_session(customer_id: str | None = None, language: str | None = None) -> dict:
     session_id = uuid.uuid4().hex
-    now = clock.now_iso()
+    now = clock.now()
+    expires_at, restore_until = session_windows(now)
     db.execute(
-        "INSERT INTO sessions (id, customer_id, language, status, created_at, last_seen_at)"
-        " VALUES (?, ?, ?, 'active', ?, ?)",
-        (session_id, customer_id, language, now, now),
+        "INSERT INTO sessions (id, customer_id, language, status, created_at,"
+        " last_seen_at, expires_at, restore_until)"
+        " VALUES (?, ?, ?, 'active', ?, ?, ?, ?)",
+        (
+            session_id,
+            customer_id,
+            language,
+            now.isoformat(),
+            now.isoformat(),
+            expires_at,
+            restore_until,
+        ),
     )
     return get_session(session_id) or {}
+
+
+def session_windows(now: datetime) -> tuple[str, str]:
+    """Expiry and restore deadline for a session last active at `now`."""
+    inactivity = int(config.get("sessions.inactivity_minutes", 30))
+    restore = int(config.get("sessions.restore_hours", 24))
+    expires_at = now + timedelta(minutes=inactivity)
+    return expires_at.isoformat(), (expires_at + timedelta(hours=restore)).isoformat()
+
+
+SESSION_FIELDS = {
+    "customer_id",
+    "language",
+    "status",
+    "summary",
+    "last_seen_at",
+    "expires_at",
+    "restore_until",
+    "expired_at",
+    "restored_at",
+    "closed_at",
+}
+
+
+def update_session(session_id: str, **fields) -> dict | None:
+    updates = {key: value for key, value in fields.items() if key in SESSION_FIELDS}
+    if not updates:
+        return get_session(session_id)
+    assignments = ", ".join(f"{key} = ?" for key in updates)
+    db.execute(
+        f"UPDATE sessions SET {assignments} WHERE id = ?",
+        (*updates.values(), session_id),
+    )
+    return get_session(session_id)
+
+
+def list_sessions(
+    customer_id: str | None = None, status: str | None = None, limit: int = 100
+) -> list[dict]:
+    clauses: list[str] = []
+    params: list = []
+    if customer_id:
+        clauses.append("customer_id = ?")
+        params.append(customer_id)
+    if status:
+        clauses.append("status = ?")
+        params.append(status)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    return db.query(
+        f"SELECT * FROM sessions {where} ORDER BY last_seen_at DESC LIMIT ?",
+        (*params, int(limit)),
+    )
 
 
 def get_or_create_session(
@@ -44,15 +106,18 @@ def get_or_create_session(
 
 
 def touch_session(session_id: str, language: str | None = None) -> None:
+    expires_at, restore_until = session_windows(clock.now())
     if language:
         db.execute(
-            "UPDATE sessions SET last_seen_at = ?, language = ? WHERE id = ?",
-            (clock.now_iso(), language, session_id),
+            "UPDATE sessions SET last_seen_at = ?, language = ?, expires_at = ?,"
+            " restore_until = ? WHERE id = ?",
+            (clock.now_iso(), language, expires_at, restore_until, session_id),
         )
     else:
         db.execute(
-            "UPDATE sessions SET last_seen_at = ? WHERE id = ?",
-            (clock.now_iso(), session_id),
+            "UPDATE sessions SET last_seen_at = ?, expires_at = ?, restore_until = ?"
+            " WHERE id = ?",
+            (clock.now_iso(), expires_at, restore_until, session_id),
         )
 
 

@@ -117,6 +117,8 @@ sessions:
   inactivity_minutes: 30
   restore_hours: 24
   context_messages: 10
+  languages: ["en", "hi", "ta", "tanglish", "hinglish"]
+  bind_customer: true
 
 security:
   mask_pii: true

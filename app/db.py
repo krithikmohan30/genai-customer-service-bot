@@ -30,7 +30,11 @@ CREATE TABLE IF NOT EXISTS sessions (
     summary       TEXT,
     created_at    TEXT NOT NULL,
     last_seen_at  TEXT NOT NULL,
-    expires_at    TEXT
+    expires_at    TEXT,
+    restore_until TEXT,
+    expired_at    TEXT,
+    restored_at   TEXT,
+    closed_at     TEXT
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -225,6 +229,16 @@ def _migrate(conn: sqlite3.Connection) -> None:
             "effective_at": "TEXT",
             "expires_at": "TEXT",
             "pii_masked": "INTEGER NOT NULL DEFAULT 0",
+        },
+    )
+    _add_missing(
+        conn,
+        "sessions",
+        {
+            "restore_until": "TEXT",
+            "expired_at": "TEXT",
+            "restored_at": "TEXT",
+            "closed_at": "TEXT",
         },
     )
     _add_missing(conn, "jobs", {"last_error": "TEXT"})

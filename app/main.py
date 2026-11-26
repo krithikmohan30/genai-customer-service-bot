@@ -8,6 +8,7 @@ Surfaces built so far:
   step 5  structured tickets, priority, routing, dedupe, handoff (Task 2)
   step 6  knowledge-base ingestion, versions, health checks (Task 3)
   step 7  uploads: OCR, cross-check, queue and retention (Task 5)
+  step 8  multilingual sessions: switching, context, expiry, restore (Task 6)
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from .core import clock, config, policy, response, security, triage
 from .core import escalation as escalation_engine
 from .core import knowledge as knowledge_engine
 from .core import routing as routing_engine
+from .core import sessions as session_engine
 from .core import sla as sla_engine
 from .core import tickets as ticket_engine
 from .core import uploads as upload_engine
@@ -57,6 +59,10 @@ class ChatIn(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
     session_id: str | None = None
     customer_id: str | None = None
+
+
+class SessionCloseIn(BaseModel):
+    reason: str | None = Field(default=None, max_length=200)
 
 
 class TimeIn(BaseModel):
@@ -112,13 +118,21 @@ def health() -> dict:
 
 @app.post("/chat")
 def chat(body: ChatIn) -> dict:
-    session = store.get_or_create_session(body.session_id, body.customer_id)
+    try:
+        lifecycle = session_engine.open_or_resume(body.session_id, body.customer_id)
+    except session_engine.SessionConflict as exc:
+        raise HTTPException(
+            status_code=403, detail="session belongs to another customer"
+        ) from exc
+
+    session = lifecycle["session"]
     session_id = session["id"]
-    history = store.customer_texts(
-        session_id, int(config.get("sessions.context_messages", 10))
-    )
+    history = store.customer_texts(session_id, session_engine.context_limit())
 
     result = triage.classify(body.message, history)
+    entities, carried = session_engine.merge_entities(session_id, result["entities"])
+    result = {**result, "entities": entities, "carried_entities": carried}
+
     store.add_message(
         session_id,
         "customer",
@@ -126,7 +140,7 @@ def chat(body: ChatIn) -> dict:
         triage=result,
         language=result["language"],
     )
-    store.touch_session(session_id, result["language"])
+    language_state = session_engine.note(session, result)
 
     escalation = escalation_engine.handle(session_id, result)
 
@@ -143,19 +157,28 @@ def chat(body: ChatIn) -> dict:
         if escalation:
             reply = response.compose(result, policy_result, escalation)
 
-    store.add_message(session_id, "assistant", reply["reply"])
+    store.add_message(
+        session_id, "assistant", reply["reply"], language=reply["language"]
+    )
 
     ticket_result = ticket_engine.create_from_chat(session, body.message, result)
 
     return {
         "session_id": session_id,
+        "session": session_engine.describe(
+            store.get_session(session_id) or session, lifecycle, language_state
+        ),
         "reply": reply["reply"],
         "tone": reply["tone"],
         "sentiment": result["sentiment"],
         "risk": result["risk"],
         "language": result["language"],
+        "languages": result.get("languages"),
+        "mixed": result.get("mixed", False),
         "intent": result["intent"],
         "entities": result["entities"],
+        "carried_entities": carried,
+        "references": session_engine.references(session_id),
         "escalation": escalation,
         "escalated": escalation is not None,
         "ticket": _ticket_brief(ticket_result),
@@ -168,6 +191,25 @@ def chat(body: ChatIn) -> dict:
         "source": result["source"],
         "masked_message": security.mask(body.message),
     }
+
+
+@app.get("/sessions")
+def session_list(
+    customer_id: str | None = None, status: str | None = None, limit: int = 50
+) -> dict:
+    rows = store.list_sessions(customer_id=customer_id, status=status, limit=limit)
+    return {"count": len(rows), "items": rows}
+
+
+@app.get("/sessions/settings")
+def session_settings() -> dict:
+    """Language set, inactivity window and restore window, all runtime-editable."""
+    return session_engine.settings()
+
+
+@app.post("/sessions/sweep")
+def sessions_sweep() -> dict:
+    return session_engine.sweep()
 
 
 @app.get("/sessions/{session_id}")
@@ -183,6 +225,29 @@ def session_detail(session_id: str) -> dict:
         ],
         "escalations": store.escalations(session_id),
     }
+
+
+@app.get("/sessions/{session_id}/context")
+def session_context(session_id: str) -> dict:
+    if store.get_session(session_id) is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    return {
+        "session_id": session_id,
+        "messages": session_engine.messages(session_id),
+        "references": session_engine.references(session_id),
+        "limit": session_engine.context_limit(),
+    }
+
+
+@app.post("/sessions/{session_id}/close")
+def session_close(session_id: str, body: SessionCloseIn | None = None) -> dict:
+    try:
+        session = session_engine.close(
+            session_id, (body.reason if body else None) or "customer_closed"
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="session not found") from exc
+    return {"session": session}
 
 
 @app.get("/escalations")
@@ -635,6 +700,7 @@ def sweep_escalations() -> dict:
     sla_result = sla_engine.sweep()
     kb_result = knowledge_engine.run_maintenance()
     upload_result = upload_engine.run_maintenance()
+    session_result = session_engine.sweep()
     return {
         "created": len(created),
         "items": created,
@@ -645,6 +711,10 @@ def sweep_escalations() -> dict:
             "health": kb_result["health"]["results"],
         },
         "uploads": upload_result,
+        "sessions": {
+            "expired": session_result["expired"],
+            "archived": session_result["archived"],
+        },
     }
 
 
